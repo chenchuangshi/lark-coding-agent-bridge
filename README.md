@@ -143,7 +143,8 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/ws save <name>` | Save the current working directory as a named workspace |
 | `/ws use <name>` | Switch to a named workspace |
 | `/ws remove <name>` | Delete a named workspace |
-| `/resume` | Resume compatible history for the same agent, working directory, and permission mode |
+| `/resume [N]` | View history and resume, archive, or rename sessions |
+| `/resume archived [N]` | View archived sessions; archiving hides entries without deleting local data |
 | `/status` | Show profile, agent, working directory, session, lark-cli identity, and run state |
 | `/config` | Adjust presentation preferences, access settings, and lark-cli identity policy |
 | `/invite user @name` | Allow a user to use the bot in DMs |
@@ -226,9 +227,29 @@ The legacy `sandbox` field is still readable for old configs. After the bridge s
 | `~/.lark-channel/active-profile` | Last selected profile |
 | `~/.lark-channel/profiles/<profile>/sessions.json` | Session state |
 | `~/.lark-channel/profiles/<profile>/sessions.json.catalog.json` | Agent-aware session catalog |
+| `~/.lark-channel/profiles/<profile>/session-meta.json` | History archive state and custom titles |
 | `~/.lark-channel/profiles/<profile>/workspaces.json` | Current and named workspace bindings |
 | `~/.lark-channel/profiles/<profile>/secrets.enc` | Profile-local encrypted secrets |
 | `~/.lark-channel/profiles/<profile>/lark-cli/` | Profile-local lark-cli directory |
+
+### Optional: Robot Roster and SSH
+
+Robot access is configured per machine and is not distributed with the Git repository.
+Use `~/.lark-channel/profiles/<profile>/robot.json`; SSH keys are recommended:
+
+```json
+{
+  "rosterBaseUrl": "https://roster.example.com",
+  "sshUser": "robot-user",
+  "sshPort": 22,
+  "identityFile": "~/.ssh/id_ed25519"
+}
+```
+
+`LARK_ROBOT_ROSTER_URL`, `LARK_ROBOT_SSH_USER`, and `LARK_ROBOT_SSH_PASSWORD`
+can provide machine-local environment settings. Never commit real passwords, private
+keys, or `robot.json`. SSH passwords are not accepted through chat, and mutating
+operations require a confirmation card.
 | `~/.lark-channel/profiles/<profile>/media/` | Attachment cache |
 | `~/.lark-channel/profiles/<profile>/logs/` | Structured run logs |
 | `~/.lark-channel/registry/processes.json` | Local process registry |

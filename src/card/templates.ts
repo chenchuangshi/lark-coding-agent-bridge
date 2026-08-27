@@ -133,48 +133,120 @@ export function statusCard(info: StatusInfo): object {
 }
 
 export interface ResumeEntry {
-  sessionId: string;
-  displayId?: string;
+  displayId: string;
   preview: string;
   relTime: string;
   lineCount?: number;
   detail?: string;
   current?: boolean;
+  available?: boolean;
+  useNonce?: string;
+  archiveNonce?: string;
+  unarchiveNonce?: string;
+  renameNonce?: string;
 }
 
-export function resumeCard(cwd: string, entries: ResumeEntry[]): object {
+export function resumeCard(
+  cwd: string,
+  entries: ResumeEntry[],
+  mode: 'active' | 'archived' = 'active',
+): object {
   const elements: object[] = [];
   elements.push(divMd(`当前 cwd：\`${escapeCode(cwd)}\``));
+  if (mode === 'archived') {
+    elements.push(divMd('归档仅从默认列表隐藏，**不会删除本机会话数据**。'));
+  }
 
   if (entries.length === 0) {
     elements.push(HR);
-    elements.push(divMd('此 cwd 下没有历史会话。'));
-    return shell('🔁 恢复历史会话', elements);
+    elements.push(divMd(mode === 'archived' ? '此 cwd 下没有归档会话。' : '此 cwd 下没有历史会话。'));
+    elements.push(actions([
+      mode === 'archived'
+        ? { text: '← 返回历史列表', value: { cmd: 'resume' }, style: 'primary' }
+        : { text: '🆕 新会话', value: { cmd: 'new' }, style: 'primary' },
+      ...(mode === 'active'
+        ? [{ text: '📦 查看归档', value: { cmd: 'resume.archived' } }]
+        : []),
+    ]));
+    return shell(mode === 'archived' ? '📦 归档的会话' : '🔁 恢复历史会话', elements);
   }
 
   elements.push(HR);
   entries.forEach((e, i) => {
     const marker = e.current ? '  ← 当前' : '';
     const detail = e.detail ?? `${e.lineCount ?? 0} 条`;
-    const displayId = e.displayId ?? e.sessionId;
+    const displayId = e.displayId;
     elements.push(
       divMd(
         `**${i + 1}.** ${escapeMd(e.preview)}${marker}\n\`${displayId.slice(0, 8)}…\` · ${e.relTime} · ${escapeMd(detail)}`,
       ),
     );
-    elements.push(
-      actions([
-        {
-          text: e.current ? '已是当前会话' : '▸ 恢复此会话',
-          value: { cmd: 'resume.use', arg: e.sessionId },
-          style: e.current ? 'default' : 'primary',
-        },
-      ]),
-    );
+    const buttons: Array<{ text: string; value: Record<string, unknown>; style?: 'primary' | 'default' | 'danger' }> = [];
+    if (e.useNonce) {
+      buttons.push({
+        text: e.current ? '已是当前会话' : '▸ 恢复此会话',
+        value: { cmd: 'resume.use', arg: e.useNonce },
+        style: e.current ? 'default' : 'primary',
+      });
+    }
+    if (mode === 'active' && e.archiveNonce) {
+      buttons.push({ text: '归档', value: { cmd: 'resume.archive', arg: e.archiveNonce } });
+    }
+    if (mode === 'archived' && e.unarchiveNonce) {
+      buttons.push({ text: '取消归档', value: { cmd: 'resume.unarchive', arg: e.unarchiveNonce } });
+    }
+    if (e.renameNonce) {
+      buttons.push({ text: '重命名', value: { cmd: 'resume.rename', arg: e.renameNonce } });
+    }
+    if (buttons.length > 0) elements.push(actions(buttons));
     if (i < entries.length - 1) elements.push(HR);
   });
 
-  return shell('🔁 恢复历史会话', elements);
+  elements.push(HR);
+  elements.push(actions([
+    ...(mode === 'active'
+      ? [{ text: '🆕 新会话', value: { cmd: 'new' }, style: 'primary' as const }]
+      : []),
+    mode === 'archived'
+      ? { text: '← 返回历史列表', value: { cmd: 'resume' }, style: 'primary' }
+      : { text: '📦 查看归档', value: { cmd: 'resume.archived' } },
+  ]));
+  return shell(mode === 'archived' ? '📦 归档的会话' : '🔁 恢复历史会话', elements);
+}
+
+export function resumeRenameCard(nonce: string, currentTitle = ''): object {
+  return {
+    schema: '2.0',
+    config: { summary: { content: '重命名会话' } },
+    body: {
+      elements: [
+        {
+          tag: 'form',
+          name: 'resume_rename_form',
+          elements: [
+            { tag: 'markdown', content: '✏️ **重命名会话**\n\n输入一个新名称（最多 80 个字符）。' },
+            {
+              tag: 'input',
+              name: 'session_title',
+              ...(currentTitle ? { default_value: currentTitle } : {}),
+              placeholder: { tag: 'plain_text', content: '例如：修复会话历史' },
+              input_type: 'text',
+              required: true,
+              max_length: 80,
+            },
+            {
+              tag: 'button',
+              name: 'submit_btn',
+              text: { tag: 'plain_text', content: '保存名称' },
+              type: 'primary',
+              form_action_type: 'submit',
+              behaviors: [{ type: 'callback', value: { cmd: 'resume.rename', arg: nonce } }],
+            },
+          ],
+        },
+      ],
+    },
+  };
 }
 
 export function helpCard(agentName = 'Agent'): object {
@@ -186,7 +258,8 @@ export function helpCard(agentName = 'Agent'): object {
         '',
         '- `/new` `/reset` — 清空当前 chat 的会话',
         '- `/new chat [name]` — 新建群+新会话，自动拉你进群',
-        '- `/resume [N]` — 列出并恢复历史会话（最多 N 条）',
+        '- `/resume [N]` — 历史会话，可恢复、归档和重命名',
+        '- `/resume archived [N]` — 查看归档会话（归档不会删除数据）',
         '- `/cd <path>` — 切换工作目录（会重置 session）',
         '- `/ws list|save <name>|use <name>|remove <name>` — 工作目录',
         '- `/account` — 查看当前应用；`/account change` 换 appId/secret 并重连',
@@ -201,6 +274,7 @@ export function helpCard(agentName = 'Agent'): object {
         '- `/reconnect` — 强制重连 WebSocket(网络抖动后 bot 没反应时用)',
         `- \`/doctor [描述]\` — 把日志和描述交给 ${escapedAgentName} 自助诊断`,
         '- `/help` — 本帮助',
+        '- `/robot 57` `/robot status` `/robot write` — 机器人名单 / 只读状态 / 写操作确认',
         '',
         `其他内容直接交给 ${escapedAgentName}。`,
       ].join('\n'),

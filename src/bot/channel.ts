@@ -29,6 +29,7 @@ import {
 } from '../card/run-state';
 import { renderText } from '../card/text-renderer';
 import { tryHandleCommand, type Controls } from '../commands';
+import { buildRobotContextForText } from '../robot/commands';
 import type { AppConfig } from '../config/schema';
 import {
   getAgentStopGraceMs,
@@ -53,6 +54,7 @@ import type { ScopeContext } from '../policy/run-policy';
 import { createOwnerRefreshController } from '../policy/owner';
 import { RunExecutor } from '../runtime/run-executor';
 import type { SessionCatalog } from '../session/catalog';
+import type { SessionMetaStore } from '../session/session-meta';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 import { ActiveRuns, type RunHandle } from './active-runs';
@@ -176,13 +178,14 @@ export interface StartChannelDeps {
   agent: AgentAdapter;
   sessions: SessionStore;
   sessionCatalog?: SessionCatalog;
+  sessionMeta?: SessionMetaStore;
   workspaces: WorkspaceStore;
   controls: Controls;
   appPaths?: Pick<AppPaths, 'secretsFile' | 'keystoreSaltFile' | 'mediaDir'>;
 }
 
 export async function startChannel(deps: StartChannelDeps): Promise<BridgeChannel> {
-  const { cfg, agent, sessions, sessionCatalog, workspaces, controls } = deps;
+  const { cfg, agent, sessions, sessionCatalog, sessionMeta, workspaces, controls } = deps;
   const activeRuns = new ActiveRuns();
   // ChatModeCache stays per-bridge-instance — invalidated on restart along
   // with everything else. Topic-mode chats only need one chat.get() call ever.
@@ -265,8 +268,9 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     // Per-request REST timeout — without a cap a slow API can hang the
     // event-handling thread.
     httpTimeoutMs: 30_000,
-    // Route WS + REST through HTTPS_PROXY / HTTP_PROXY when set (no-op otherwise).
-    respectProxyEnv: true,
+    // Feishu WS/REST stay direct. Agent CLIs get proxy via LARK_AGENT_* →
+    // buildAgentProxyEnv() on spawn (rule-mode friendly).
+    respectProxyEnv: false,
   };
 
   const channel = createLarkChannel(opts);
@@ -340,6 +344,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           agent,
           sessions,
           sessionCatalog,
+          sessionMeta,
           workspaces,
           activeRuns,
           pending,
@@ -362,6 +367,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           evt,
           sessions,
           sessionCatalog,
+          sessionMeta,
           workspaces,
           activeRuns,
           agent,
@@ -524,6 +530,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         activeRuns.stopAll(),
         sessions.flush(),
         sessionCatalog?.flush(),
+        sessionMeta?.flush(),
         callbackNonceStore?.flush(),
         workspaces.flush(),
       ]);
@@ -616,6 +623,7 @@ interface IntakeDeps {
   agent: AgentAdapter;
   sessions: SessionStore;
   sessionCatalog?: SessionCatalog;
+  sessionMeta?: SessionMetaStore;
   workspaces: WorkspaceStore;
   activeRuns: ActiveRuns;
   pending: PendingQueue;
@@ -639,6 +647,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     agent,
     sessions,
     sessionCatalog,
+    sessionMeta,
     workspaces,
     activeRuns,
     pending,
@@ -765,6 +774,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     agent,
     activeRuns,
     sessionCatalog,
+    sessionMeta,
     sessionCatalogIdentity: await commandSessionCatalogIdentity({
       msg: emsg,
       scope,
@@ -914,6 +924,17 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       ]
     : undefined;
 
+  const robotContext = await buildRobotContextForText(
+    controls.profile,
+    scope,
+    batch.map((m) => m.content).join('\n'),
+  ).catch((err) => {
+    log.warn('robot', 'context-build-failed', {
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return undefined;
+  });
+
   const prompt = buildPrompt(
     batch,
     attachments,
@@ -921,6 +942,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     topicContext,
     channel.botIdentity,
     extraInstructions,
+    robotContext,
   );
   log.info('prompt', 'built', {
     promptChars: prompt.length,
@@ -1807,6 +1829,7 @@ function buildPrompt(
   topicContext: QuotedContext[] = [],
   botIdentity?: { openId: string; name?: string },
   extraInstructions?: string[],
+  robotContext?: Record<string, unknown>,
 ): string {
   const first = batch[0];
   if (!first) return '';
@@ -1855,6 +1878,7 @@ function buildPrompt(
     quotedMessages: quotes.map(toPromptQuote),
     interactiveCards: batch.map(toPromptInteractiveCard).filter(isDefined),
     attachments: attachments.map(toPromptAttachment),
+    ...(robotContext ? { robotContext } : {}),
   });
 }
 

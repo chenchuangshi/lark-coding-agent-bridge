@@ -7,6 +7,7 @@ import {
   type SpawnedProcessByStdio,
 } from '../platform/spawn';
 import { normalizeSessionPreview } from './preview';
+import { buildAgentProxyEnv } from '../agent/agent-proxy-env';
 
 type CodexAppServerChild = SpawnedProcessByStdio<Writable, Readable, Readable>;
 
@@ -179,7 +180,10 @@ function spawnCodexAppServer(options: ListCodexThreadHistoryOptions): CodexAppSe
   }
 
   return spawnProcess(options.binary, ['app-server', '--listen', 'stdio://'], {
-    env: mergeProcessEnv(process.env, envOverrides),
+    env: mergeProcessEnv(process.env, {
+      ...envOverrides,
+      ...buildAgentProxyEnv(),
+    }),
     stdio: ['pipe', 'pipe', 'pipe'],
   }) as CodexAppServerChild;
 }

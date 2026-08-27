@@ -10,6 +10,7 @@ import { log } from '../core/logger';
 import { canUseDm, canUseGroup } from '../policy/access';
 import type { RunExecutor } from '../runtime/run-executor';
 import type { SessionCatalog } from '../session/catalog';
+import type { SessionMetaStore } from '../session/session-meta';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 import { commandSessionCatalogIdentity } from '../bot/session-catalog-identity';
@@ -29,6 +30,7 @@ export interface CardDispatchDeps {
   evt: CardActionEvent;
   sessions: SessionStore;
   sessionCatalog?: SessionCatalog;
+  sessionMeta?: SessionMetaStore;
   workspaces: WorkspaceStore;
   activeRuns: ActiveRuns;
   agent: AgentAdapter;
@@ -97,6 +99,7 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
       chatMode: mode,
       sessions: deps.sessions,
       sessionCatalog: deps.sessionCatalog,
+      sessionMeta: deps.sessionMeta,
       sessionCatalogIdentity: await commandSessionCatalogIdentity({
         msg,
         scope,

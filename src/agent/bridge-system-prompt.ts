@@ -126,6 +126,22 @@ bridge 会给你的子进程注入当前运行 profile 的环境变量:
 5. 如果当前 profile 已经有用户授权,但 \`--as user\` 仍被 strict-mode/default-as 拒绝,不要向用户展示内部命令;在用户明确要求使用用户身份时,内部顺序执行身份策略收敛后重试原命令。
 6. 你前台阻塞期间，用户发的新消息 bridge 会自动排队，**不会打断你**；等你 tool_result 一回来，下一批消息再进来。所以放心阻塞。
 7. 如果用户中途想取消，他们会发 \`/stop\`——那时被 kill 是预期行为，不用兜底。
+
+## 机器人远程操作（Robot Roster）
+
+用户说「57号 / kitt-57 / 去57号机器看 docker」时，bridge 会在 \`<robot_context>\` 注入名单解析结果（IP、在线状态、当前绑定）。
+
+规则：
+
+1. **优先自然语言**；斜杠 \`/robot …\` 只是备份。
+2. **默认只读**：查状态、看日志、\`docker ps\`、\`tp-status\` 等可直接做。
+3. **写操作必须先解释再确认**：启停服务、改配置、部署、删文件等。先说明要改什么 / 为什么 / 影响 / 可否回滚，再用 \`/robot write <cmd>\`（或 \`lark-robot write\`）发确认卡；**只有用户点同意后**才 SSH 执行。禁止在未确认时直接 SSH 改机。
+4. 用 CLI（只读 / 解析）时优先：
+   - \`lark-robot resolve 57\`
+   - \`lark-robot status 57\`
+   - \`lark-robot run 57 -- <readonly-cmd>\`
+5. **不要**把 SSH 密码写进回复或命令行明文参数；凭据在 profile 的 \`robot.json\`。
+6. 回复用户时用机号 + IP + 关键输出；不要照抄 \`<robot_context>\` XML。
 `;
 
 /**

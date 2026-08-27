@@ -24,7 +24,7 @@ import {
 import { GROUP_MSG_SCOPE, hasGroupMsgScope } from '../bot/app-scope';
 import { requestScopeGrantLink } from '../bot/wizard';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
-import { helpCard, resumeCard, statusCard, workspacesCard } from '../card/templates';
+import { helpCard, resumeCard, resumeRenameCard, statusCard, workspacesCard } from '../card/templates';
 import type { AppConfig, AppPreferences, MessageReplyMode, TenantBrand } from '../config/schema';
 import {
   getAgentStopGraceMs,
@@ -68,6 +68,12 @@ import {
   type ListCodexThreadHistoryOptions,
 } from '../session/codex-history';
 import type { SessionCatalog, SessionCatalogIdentity } from '../session/catalog';
+import {
+  normalizeSessionTitle,
+  type SessionMetaIdentity,
+  type SessionMetaSnapshot,
+  type SessionMetaStore,
+} from '../session/session-meta';
 import { isAlive, readAndPrune, resolveTarget } from '../runtime/registry';
 import { readUiSidecar } from '../ui/sidecar';
 import type { SessionStore } from '../session/store';
@@ -85,6 +91,7 @@ import { isMeetingNo } from '../meeting/api';
 import { answerInMeeting, meetingScopeId } from '../meeting/orchestrator';
 import type { MeetingSession } from '../meeting/session';
 import { hasStructuredLarkCliUserAuth } from '../lark-cli/identity-policy';
+import { handleRobotCommand } from '../robot/commands';
 
 export interface Controls {
   profile: string;
@@ -130,6 +137,7 @@ export interface CommandContext {
   chatMode: 'p2p' | 'group' | 'topic';
   sessions: SessionStore;
   sessionCatalog?: SessionCatalog;
+  sessionMeta?: SessionMetaStore;
   sessionCatalogIdentity?: SessionCatalogIdentity;
   workspaces: WorkspaceStore;
   agent: AgentAdapter;
@@ -152,14 +160,18 @@ export interface CommandContext {
 type Handler = (args: string, ctx: CommandContext) => Promise<void>;
 
 interface ResumeCandidate {
+  action: ResumeCandidateAction;
   scopeId: string;
   agentId: 'claude' | 'codex';
   cwdRealpath: string;
   policyFingerprint: string;
   sessionId?: string;
   threadId?: string;
+  snapshot?: SessionMetaSnapshot;
   expiresAt: number;
 }
+
+type ResumeCandidateAction = 'use' | 'archive' | 'unarchive' | 'rename';
 
 const RESUME_CANDIDATE_TTL_MS = 10 * 60 * 1000;
 const resumeCandidates = new Map<string, ResumeCandidate>();
@@ -186,6 +198,7 @@ const handlers: Record<string, Handler> = {
   '/invite': handleInvite,
   '/remove': handleRemove,
   '/meeting': handleMeeting,
+  '/robot': handleRobot,
 };
 
 /**
@@ -320,6 +333,10 @@ function expandTilde(p: string): string {
 
 function isAbsoluteOrTilde(p: string): boolean {
   return isAbsolute(p) || p === '~' || p.startsWith('~/');
+}
+
+async function handleRobot(args: string, ctx: CommandContext): Promise<void> {
+  await handleRobotCommand(args, ctx, reply);
 }
 
 async function handleNew(args: string, ctx: CommandContext): Promise<void> {
@@ -542,8 +559,22 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
     return applyResume(rest, ctx);
   }
 
-  // Default: list recent sessions
-  const n = Number.parseInt(sub, 10);
+  if (sub === 'archive' && rest) {
+    return setResumeArchived(rest, true, ctx);
+  }
+
+  if (sub === 'unarchive' && rest) {
+    return setResumeArchived(rest, false, ctx);
+  }
+
+  if (sub === 'rename' && rest) {
+    const [nonce = '', ...titleParts] = parts.slice(1);
+    return renameResumeCandidate(nonce, titleParts.join(' '), ctx);
+  }
+
+  const archivedMode = sub === 'archived';
+  const rawLimit = archivedMode ? parts[1] : sub;
+  const n = Number.parseInt(rawLimit ?? '', 10);
   const limit = Number.isFinite(n) && n > 0 && n <= 20 ? n : 5;
 
   const cwd = selectedResumeCwd(ctx);
@@ -557,62 +588,255 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
     return;
   }
 
+  if (!ctx.sessionCatalogIdentity || !ctx.sessionMeta) {
+    await reply(ctx, '当前上下文无法读取会话元数据，请稍后重试。');
+    return;
+  }
+
+  if (archivedMode) return listArchivedResumeHistory(ctx, cwd, limit);
+
   if (ctx.controls.profileConfig.agentKind === 'codex') {
     const identity = ctx.sessionCatalogIdentity;
     const entry =
       ctx.sessionCatalog && identity
         ? ctx.sessionCatalog.activeFor(identity)
         : undefined;
-    const history = identity ? await listCodexResumeHistory(ctx, cwd, limit) : [];
+    const history = identity ? await listCodexResumeHistory(ctx, cwd, historyFetchLimit(limit)) : [];
     if (history.length > 0 && identity) {
-      const entries = history.map((thread) => {
-        const nonce = issueResumeCandidate(identity, { threadId: thread.threadId });
-        return {
-          sessionId: nonce,
-          preview: thread.name || thread.preview,
-          relTime: formatRelTime(thread.updatedAtMs),
-          detail: `Codex · ${thread.source}`,
-          current: thread.threadId === entry?.threadId,
-        };
-      });
-      const card = resumeCard(cwd, entries);
+      const entries = history
+        .filter((thread) => !ctx.sessionMeta!.isArchived(metaIdentity(identity, { threadId: thread.threadId })))
+        .slice(0, limit)
+        .map((thread) => {
+          const target = { threadId: thread.threadId } as const;
+          const snapshot = codexSnapshot(thread);
+          const meta = ctx.sessionMeta!.get(metaIdentity(identity, target));
+          return {
+            displayId: thread.threadId,
+            preview: meta?.customTitle || thread.name || thread.preview,
+            relTime: formatRelTime(thread.updatedAtMs),
+            detail: `Codex · ${thread.source}`,
+            current: thread.threadId === entry?.threadId,
+            useNonce: issueResumeCandidate(identity, target, 'use'),
+            archiveNonce: issueResumeCandidate(identity, target, 'archive', snapshot),
+            renameNonce: issueResumeCandidate(identity, target, 'rename'),
+          };
+        });
+      const card = resumeCard(cwd, entries, 'active');
       await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
       return;
     }
     if (entry?.threadId && identity) {
-      const nonce = issueResumeCandidate(identity, { threadId: entry.threadId });
-      await reply(
-        ctx,
-        `当前 Codex thread 可恢复。\n使用 \`/resume use ${nonce}\` 恢复（10 分钟内有效）。`,
-      );
+      const target = { threadId: entry.threadId } as const;
+      if (ctx.sessionMeta.isArchived(metaIdentity(identity, target))) {
+        const card = resumeCard(cwd, [], 'active');
+        await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
+        return;
+      }
+      const meta = ctx.sessionMeta.get(metaIdentity(identity, target));
+      const preview = meta?.customTitle || entry.lastSummary || '当前 Codex 会话';
+      const card = resumeCard(cwd, [{
+        displayId: entry.threadId,
+        preview,
+        relTime: formatRelTime(entry.updatedAt),
+        detail: 'Codex · 当前绑定',
+        current: true,
+        useNonce: issueResumeCandidate(identity, target, 'use'),
+        archiveNonce: issueResumeCandidate(identity, target, 'archive', {
+          preview,
+          source: 'current',
+          updatedAt: entry.updatedAt,
+        }),
+        renameNonce: issueResumeCandidate(identity, target, 'rename'),
+      }], 'active');
+      await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
       return;
     }
-    const card = resumeCard(cwd, []);
+    const card = resumeCard(cwd, [], 'active');
     await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
     return;
   }
 
-  const sessions = await listClaudeResumeHistory(ctx, cwd, limit);
+  const sessions = await listClaudeResumeHistory(ctx, cwd, historyFetchLimit(limit));
   const currentSession = ctx.sessions.getRaw(ctx.scope);
   const identity = ctx.sessionCatalogIdentity;
-  const entries = sessions.map((s) => ({
-    sessionId: identity
-      ? issueResumeCandidate(identity, { sessionId: s.sessionId })
-      : s.sessionId,
-    displayId: s.sessionId,
-    preview: s.preview,
-    relTime: formatRelTime(s.mtime),
-    lineCount: s.lineCount,
-    current: s.sessionId === currentSession?.sessionId,
-  }));
-  const card = resumeCard(cwd, entries);
+  const entries = sessions
+    .filter((s) => identity && !ctx.sessionMeta!.isArchived(metaIdentity(identity, { sessionId: s.sessionId })))
+    .slice(0, limit)
+    .map((s) => {
+      const target = { sessionId: s.sessionId } as const;
+      const meta = ctx.sessionMeta!.get(metaIdentity(identity!, target));
+      return {
+        displayId: s.sessionId,
+        preview: meta?.customTitle || s.preview,
+        relTime: formatRelTime(s.mtime),
+        lineCount: s.lineCount,
+        current: s.sessionId === currentSession?.sessionId,
+        useNonce: issueResumeCandidate(identity!, target, 'use'),
+        archiveNonce: issueResumeCandidate(identity!, target, 'archive', claudeSnapshot(s)),
+        renameNonce: issueResumeCandidate(identity!, target, 'rename'),
+      };
+    });
+  const card = resumeCard(cwd, entries, 'active');
   await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
+}
+
+async function listArchivedResumeHistory(ctx: CommandContext, cwd: string, limit: number): Promise<void> {
+  const identity = ctx.sessionCatalogIdentity!;
+  const metaStore = ctx.sessionMeta!;
+  const archived = metaStore.listArchived(identity.agentId, identity.cwdRealpath).slice(0, limit);
+  const current = ctx.sessionCatalog?.activeFor(identity);
+  const upstream = identity.agentId === 'codex'
+    ? await listCodexResumeHistory(ctx, cwd, historyFetchLimit(Math.max(limit, archived.length)))
+    : await listClaudeResumeHistory(ctx, cwd, historyFetchLimit(Math.max(limit, archived.length)));
+  const upstreamById = new Map(upstream.map((entry) => [
+    identity.agentId === 'codex'
+      ? (entry as CodexThreadHistoryEntry).threadId
+      : (entry as SessionSummary).sessionId,
+    entry,
+  ]));
+  const entries = archived.map((meta) => {
+    const id = identity.agentId === 'codex' ? meta.threadId! : meta.sessionId!;
+    const found = upstreamById.get(id);
+    const target = identity.agentId === 'codex'
+      ? { threadId: id } as const
+      : { sessionId: id } as const;
+    const preview = meta.customTitle ||
+      (identity.agentId === 'codex' ? (found as CodexThreadHistoryEntry | undefined)?.name : undefined) ||
+      found?.preview || meta.previewSnapshot || '(无标题会话)';
+    const updatedAt = identity.agentId === 'codex'
+      ? (found as CodexThreadHistoryEntry | undefined)?.updatedAtMs
+      : (found as SessionSummary | undefined)?.mtime;
+    const detail = found
+      ? identity.agentId === 'codex'
+        ? `Codex · ${(found as CodexThreadHistoryEntry).source}`
+        : `${(found as SessionSummary).lineCount} 条`
+      : '本机会话已不存在或暂不可见';
+    return {
+      displayId: id,
+      preview,
+      relTime: formatRelTime(updatedAt ?? meta.updatedAtSnapshot ?? meta.archivedAt ?? meta.updatedAt),
+      detail,
+      current: identity.agentId === 'codex' ? current?.threadId === id : current?.sessionId === id,
+      ...(found ? { useNonce: issueResumeCandidate(identity, target, 'use') } : {}),
+      unarchiveNonce: issueResumeCandidate(identity, target, 'unarchive'),
+      renameNonce: issueResumeCandidate(identity, target, 'rename'),
+      available: Boolean(found),
+    };
+  });
+  const card = resumeCard(cwd, entries, 'archived');
+  await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
+}
+
+async function setResumeArchived(nonce: string, archived: boolean, ctx: CommandContext): Promise<void> {
+  if (ctx.chatMode !== 'p2p' || !ctx.sessionCatalogIdentity || !ctx.sessionMeta) {
+    await reply(ctx, '只能在私聊的当前工作区管理历史会话。');
+    return;
+  }
+  const action = archived ? 'archive' : 'unarchive';
+  const candidate = consumeResumeCandidate(nonce, ctx.sessionCatalogIdentity, action);
+  if (!candidate) {
+    await reply(ctx, '这个操作已失效，请重新打开 `/resume` 列表。');
+    return;
+  }
+  const target = candidateTarget(candidate);
+  const identity = metaIdentity(ctx.sessionCatalogIdentity, target);
+  ctx.sessionMeta.setArchived(identity, archived, candidate.snapshot);
+
+  let clearedCurrent = false;
+  if (archived && ctx.sessionCatalog) {
+    const current = ctx.sessionCatalog.activeFor(ctx.sessionCatalogIdentity);
+    const isCurrent = candidate.agentId === 'codex'
+      ? current?.threadId === candidate.threadId
+      : current?.sessionId === candidate.sessionId;
+    if (isCurrent) {
+      ctx.activeRuns.interrupt(ctx.scope);
+      ctx.sessionCatalog.archiveActive({ ...ctx.sessionCatalogIdentity, now: Date.now() });
+      if (candidate.agentId === 'claude') ctx.sessions.clear(ctx.scope);
+      clearedCurrent = true;
+    }
+  }
+  if (archived) {
+    await reply(ctx, clearedCurrent
+      ? '已归档当前会话，仅从列表隐藏，未删除本机数据。下一条普通消息会开始新会话，也可从归档列表恢复。'
+      : '已归档，仅从默认列表隐藏，未删除本机会话数据。');
+  } else {
+    await reply(ctx, '已取消归档，会话已回到默认历史列表。');
+  }
+}
+
+async function renameResumeCandidate(nonce: string, rawTitle: string, ctx: CommandContext): Promise<void> {
+  if (ctx.chatMode !== 'p2p' || !ctx.sessionCatalogIdentity || !ctx.sessionMeta) {
+    await reply(ctx, '只能在私聊的当前工作区修改会话名称。');
+    return;
+  }
+  const submittedTitle = typeof ctx.formValue?.session_title === 'string'
+    ? ctx.formValue.session_title
+    : rawTitle;
+  if (!submittedTitle) {
+    const candidate = inspectResumeCandidate(nonce, ctx.sessionCatalogIdentity, 'rename');
+    if (!candidate) {
+      await reply(ctx, '这个操作已失效，请重新打开 `/resume` 列表。');
+      return;
+    }
+    if (ctx.fromCardAction) {
+      const meta = ctx.sessionMeta.get(metaIdentity(ctx.sessionCatalogIdentity, candidateTarget(candidate)));
+      await ctx.channel.send(
+        ctx.msg.chatId,
+        { card: resumeRenameCard(nonce, meta?.customTitle) },
+        commandReplyOptions(ctx),
+      );
+      return;
+    }
+    await reply(ctx, `请在 10 分钟内发送：\n\`/resume rename ${nonce} 新名称\``);
+    return;
+  }
+  const candidate = consumeResumeCandidate(nonce, ctx.sessionCatalogIdentity, 'rename');
+  if (!candidate) {
+    await reply(ctx, '这个操作已失效，请重新打开 `/resume` 列表。');
+    return;
+  }
+  const title = normalizeSessionTitle(submittedTitle);
+  if (!title) {
+    await reply(ctx, '会话名称不能为空。');
+    return;
+  }
+  ctx.sessionMeta.setTitle(metaIdentity(ctx.sessionCatalogIdentity, candidateTarget(candidate)), title);
+  await reply(ctx, `会话已命名为「${title}」。`);
+}
+
+function historyFetchLimit(limit: number): number {
+  return Math.min(100, Math.max(50, limit * 4));
+}
+
+function metaIdentity(
+  identity: SessionCatalogIdentity,
+  target: { sessionId: string } | { threadId: string },
+): SessionMetaIdentity {
+  return {
+    agentId: identity.agentId,
+    cwdRealpath: identity.cwdRealpath,
+    ...target,
+  };
+}
+
+function candidateTarget(candidate: ResumeCandidate): { sessionId: string } | { threadId: string } {
+  return candidate.agentId === 'codex'
+    ? { threadId: candidate.threadId! }
+    : { sessionId: candidate.sessionId! };
+}
+
+function codexSnapshot(entry: CodexThreadHistoryEntry): SessionMetaSnapshot {
+  return { preview: entry.name || entry.preview, source: entry.source, updatedAt: entry.updatedAtMs };
+}
+
+function claudeSnapshot(entry: SessionSummary): SessionMetaSnapshot {
+  return { preview: entry.preview, updatedAt: entry.mtime, lineCount: entry.lineCount };
 }
 
 async function applyResume(sessionId: string, ctx: CommandContext): Promise<void> {
   if (ctx.sessionCatalog && ctx.sessionCatalogIdentity) {
     const entry = ctx.sessionCatalog.activeFor(ctx.sessionCatalogIdentity);
-    const resolved = consumeResumeCandidate(sessionId, ctx.sessionCatalogIdentity);
+    const resolved = consumeResumeCandidate(sessionId, ctx.sessionCatalogIdentity, 'use');
     if (resolved) {
       ctx.activeRuns.interrupt(ctx.scope);
       if (ctx.sessionCatalogIdentity.agentId === 'codex') {
@@ -671,16 +895,20 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
 function issueResumeCandidate(
   identity: SessionCatalogIdentity,
   target: { sessionId: string } | { threadId: string },
+  action: ResumeCandidateAction,
+  snapshot?: SessionMetaSnapshot,
 ): string {
   pruneResumeCandidates();
   let nonce = randomUUID().slice(0, 12);
   while (resumeCandidates.has(nonce)) nonce = randomUUID().slice(0, 12);
   resumeCandidates.set(nonce, {
+    action,
     scopeId: identity.scopeId,
     agentId: identity.agentId,
     cwdRealpath: identity.cwdRealpath,
     policyFingerprint: identity.policyFingerprint,
     ...target,
+    ...(snapshot ? { snapshot } : {}),
     expiresAt: Date.now() + RESUME_CANDIDATE_TTL_MS,
   });
   return nonce;
@@ -689,12 +917,24 @@ function issueResumeCandidate(
 function consumeResumeCandidate(
   nonce: string,
   identity: SessionCatalogIdentity,
+  action: ResumeCandidateAction,
+): ResumeCandidate | undefined {
+  const candidate = inspectResumeCandidate(nonce, identity, action);
+  if (!candidate) return undefined;
+  resumeCandidates.delete(nonce);
+  return candidate;
+}
+
+function inspectResumeCandidate(
+  nonce: string,
+  identity: SessionCatalogIdentity,
+  action: ResumeCandidateAction,
 ): ResumeCandidate | undefined {
   pruneResumeCandidates();
   const candidate = resumeCandidates.get(nonce);
   if (!candidate) return undefined;
-  resumeCandidates.delete(nonce);
   if (
+    candidate.action !== action ||
     candidate.scopeId !== identity.scopeId ||
     candidate.agentId !== identity.agentId ||
     candidate.cwdRealpath !== identity.cwdRealpath ||
@@ -704,7 +944,7 @@ function consumeResumeCandidate(
   ) {
     return undefined;
   }
-  return candidate;
+  return { ...candidate };
 }
 
 function pruneResumeCandidates(now = Date.now()): void {

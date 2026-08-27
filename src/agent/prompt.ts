@@ -81,11 +81,16 @@ export interface BuildAgentPromptInput {
   interactiveCards?: BridgePromptInteractiveCard[];
   comment?: BridgePromptComment;
   attachments?: BridgePromptAttachment[];
+  /** Resolved Robot Roster / active machine binding for this turn. */
+  robotContext?: Record<string, unknown>;
 }
 
 export function buildAgentPrompt(input: BuildAgentPromptInput): string {
   const sections = [
     promptSection('bridge_context', input.context),
+    input.robotContext
+      ? promptSection('robot_context', input.robotContext)
+      : undefined,
     input.instructions && input.instructions.length > 0
       ? promptSection('bridge_instructions', input.instructions)
       : undefined,

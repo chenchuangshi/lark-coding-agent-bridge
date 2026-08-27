@@ -12,6 +12,7 @@ import { canUseDm } from '../../../src/policy/access.js';
 import { evaluateRunPolicy } from '../../../src/policy/run-policy.js';
 import { resolveWorkingDirectory } from '../../../src/policy/workspace.js';
 import { SessionCatalog, type SessionCatalogIdentity } from '../../../src/session/catalog.js';
+import { SessionMetaStore } from '../../../src/session/session-meta.js';
 import { SessionStore } from '../../../src/session/store.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
 import type { CodexThreadHistoryEntry } from '../../../src/session/codex-history.js';
@@ -26,6 +27,7 @@ interface Harness {
   sessions: SessionStore;
   workspaces: WorkspaceStore;
   catalog: SessionCatalog;
+  sessionMeta: SessionMetaStore;
   controls: Controls;
   identity: SessionCatalogIdentity;
   claudeHistory: SessionSummary[];
@@ -34,6 +36,7 @@ interface Harness {
   pending: PendingQueue;
   run(content: string, options?: { withCatalogIdentity?: boolean; chatMode?: 'p2p' | 'group' | 'topic' }): Promise<boolean>;
   dispatchResumeArg(arg: string): Promise<void>;
+  dispatchCard(value: Record<string, unknown>, formValue?: Record<string, unknown>): Promise<void>;
 }
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -114,7 +117,7 @@ describe('agent-aware resume commands', () => {
     h.catalog.upsertActive({ ...h.identity, threadId: 'thread-current', now: 1000 });
 
     await expect(h.run('/resume')).resolves.toBe(true);
-    const nonce = resumeNonce(lastMarkdown(h.channel));
+    const [nonce] = resumeArgsFromCard(lastContent(h.channel));
 
     await expect(h.run(`/resume use ${nonce}`)).resolves.toBe(true);
 
@@ -126,7 +129,7 @@ describe('agent-aware resume commands', () => {
     const h = await createHarness('codex');
     h.catalog.upsertActive({ ...h.identity, threadId: 'thread-current', now: 1000 });
     await expect(h.run('/resume')).resolves.toBe(true);
-    const nonce = resumeNonce(lastMarkdown(h.channel));
+    const [nonce] = resumeArgsFromCard(lastContent(h.channel));
     const originalSend = h.channel.send.bind(h.channel);
     let attempts = 0;
     h.channel.send = async (...args) => {
@@ -151,9 +154,10 @@ describe('agent-aware resume commands', () => {
 
     await expect(h.run('/resume')).resolves.toBe(true);
 
-    expect(lastMarkdown(h.channel)).toContain('当前 Codex thread 可恢复');
-    expect(lastMarkdown(h.channel)).toMatch(/\/resume use [a-f0-9-]+/);
-    expect(lastMarkdown(h.channel)).not.toContain('thread-current');
+    const rendered = lastContentString(h.channel);
+    expect(rendered).toContain('当前 Codex 会话');
+    expect(resumeArgsFromCard(lastContent(h.channel))).toHaveLength(1);
+    expect(rendered).not.toContain('thread-current');
   });
 
   it('does not accept raw Codex thread ids as resume candidates', async () => {
@@ -226,6 +230,79 @@ describe('agent-aware resume commands', () => {
     expect(lastMarkdown(h.channel)).toContain('已完成');
   });
 
+  it('archives, lists, renames, and unarchives a Codex history entry without exposing its id', async () => {
+    const h = await createHarness('codex');
+    h.codexHistory.push(codexThread('thread-archive-secret', 'automatic title', 1_700_000_100_000));
+
+    await expect(h.run('/resume')).resolves.toBe(true);
+    const [archiveNonce] = actionArgsFromCard(lastContent(h.channel), 'resume.archive');
+    expect(archiveNonce).toBeTypeOf('string');
+    await expect(h.run(`/resume archive ${archiveNonce}`)).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('未删除');
+
+    await expect(h.run('/resume')).resolves.toBe(true);
+    expect(lastContentString(h.channel)).not.toContain('automatic title');
+
+    await expect(h.run('/resume archived')).resolves.toBe(true);
+    const archivedCard = lastContent(h.channel);
+    expect(JSON.stringify(archivedCard)).toContain('automatic title');
+    expect(JSON.stringify(archivedCard)).not.toContain('thread-archive-secret');
+    const [renameNonce] = actionArgsFromCard(archivedCard, 'resume.rename');
+    const [unarchiveNonce] = actionArgsFromCard(archivedCard, 'resume.unarchive');
+
+    await expect(h.run(`/resume rename ${renameNonce} 示教器网络`)).resolves.toBe(true);
+    await expect(h.run('/resume archived')).resolves.toBe(true);
+    expect(lastContentString(h.channel)).toContain('示教器网络');
+
+    await expect(h.run(`/resume unarchive ${unarchiveNonce}`)).resolves.toBe(true);
+    await expect(h.run('/resume')).resolves.toBe(true);
+    expect(lastContentString(h.channel)).toContain('示教器网络');
+  });
+
+  it('renames a Codex session through the card form without requiring a text command', async () => {
+    const h = await createHarness('codex');
+    h.codexHistory.push(codexThread('thread-rename-secret', 'automatic title', 1_700_000_100_000));
+
+    await h.run('/resume');
+    const [renameNonce] = actionArgsFromCard(lastContent(h.channel), 'resume.rename');
+    await h.dispatchCard({ cmd: 'resume.rename', arg: renameNonce });
+
+    const form = lastContentString(h.channel);
+    expect(form).toContain('resume_rename_form');
+    expect(form).toContain('session_title');
+
+    await h.dispatchCard(
+      { cmd: 'resume.rename', arg: renameNonce },
+      { session_title: '修复会话历史' },
+    );
+    expect(lastMarkdown(h.channel)).toContain('会话已命名为「修复会话历史」');
+
+    await h.run('/resume');
+    expect(lastContentString(h.channel)).toContain('修复会话历史');
+  });
+
+  it('offers a new-session action from the resume list', async () => {
+    const h = await createHarness('codex');
+    h.codexHistory.push(codexThread('thread-current', 'current title', 1_700_000_100_000));
+
+    await h.run('/resume');
+
+    expect(lastContentString(h.channel)).toContain('"cmd":"new"');
+  });
+
+  it('clears the active binding when the current Codex thread is archived', async () => {
+    const h = await createHarness('codex');
+    h.catalog.upsertActive({ ...h.identity, threadId: 'thread-current', now: 1000 });
+    h.codexHistory.push(codexThread('thread-current', 'current title', 1_700_000_100_000));
+
+    await expect(h.run('/resume')).resolves.toBe(true);
+    const [nonce] = actionArgsFromCard(lastContent(h.channel), 'resume.archive');
+    await expect(h.run(`/resume archive ${nonce}`)).resolves.toBe(true);
+
+    expect(h.catalog.activeFor(h.identity)).toBeUndefined();
+    expect(lastMarkdown(h.channel)).toContain('下一条普通消息会开始新会话');
+  });
+
   it('keeps Codex resume history details out of group chats like Claude', async () => {
     const h = await createHarness('codex');
     h.codexHistory.push(codexThread('thread-alpha-secret', 'alpha prompt', 1_700_000_100_000));
@@ -275,6 +352,7 @@ async function createHarness(
   const sessions = new SessionStore(join(tmp.profile, 'sessions.json'));
   const workspaces = new WorkspaceStore(join(tmp.profile, 'workspaces.json'));
   const catalog = new SessionCatalog(join(tmp.profile, 'session-catalog.json'));
+  const sessionMeta = new SessionMetaStore(join(tmp.profile, 'session-meta.json'));
   const claudeHistory: SessionSummary[] = [];
   const codexHistory: CodexThreadHistoryEntry[] = [];
   const activeRuns = new ActiveRuns();
@@ -315,6 +393,7 @@ async function createHarness(
       chatMode: runOptions.chatMode ?? 'p2p',
       sessions,
       sessionCatalog: catalog,
+      sessionMeta,
       sessionCatalogIdentity: runOptions.withCatalogIdentity === false ? undefined : identity,
       workspaces,
       agent,
@@ -324,12 +403,15 @@ async function createHarness(
       codexHistoryProvider: async () => codexHistory,
     });
 
-  const dispatchResumeArg = (arg: string): Promise<void> =>
-    handleCardAction({
+  const dispatchCard = (
+    value: Record<string, unknown>,
+    formValue?: Record<string, unknown>,
+  ): Promise<void> => handleCardAction({
       channel: channel as unknown as Parameters<typeof handleCardAction>[0]['channel'],
-      evt: cardEvent({ cmd: 'resume.use', arg }),
+      evt: cardEvent(value, formValue),
       sessions,
       sessionCatalog: catalog,
+      sessionMeta,
       workspaces,
       activeRuns,
       agent,
@@ -338,9 +420,12 @@ async function createHarness(
       chatModeCache,
     });
 
+  const dispatchResumeArg = (arg: string): Promise<void> =>
+    dispatchCard({ cmd: 'resume.use', arg });
+
   cleanups.push(async () => {
     pending.cancelAll();
-    await Promise.all([sessions.flush(), workspaces.flush(), catalog.flush()]);
+    await Promise.all([sessions.flush(), workspaces.flush(), catalog.flush(), sessionMeta.flush()]);
     await tmp.cleanup();
   });
 
@@ -350,6 +435,7 @@ async function createHarness(
     sessions,
     workspaces,
     catalog,
+    sessionMeta,
     controls,
     identity,
     claudeHistory,
@@ -358,6 +444,7 @@ async function createHarness(
     pending,
     run,
     dispatchResumeArg,
+    dispatchCard,
   };
 }
 
@@ -432,7 +519,10 @@ function message(content: string): NormalizedMessage {
   } as unknown as NormalizedMessage;
 }
 
-function cardEvent(value: Record<string, unknown>): CardActionEvent {
+function cardEvent(
+  value: Record<string, unknown>,
+  formValue?: Record<string, unknown>,
+): CardActionEvent {
   return {
     action: { value },
     chatId: 'chat-1',
@@ -441,6 +531,7 @@ function cardEvent(value: Record<string, unknown>): CardActionEvent {
       openId: 'ou-user',
       name: 'User',
     },
+    ...(formValue ? { raw: { action: { form_value: formValue } } } : {}),
   } as unknown as CardActionEvent;
 }
 
@@ -460,21 +551,17 @@ function lastContentString(channel: FakeChannel): string {
   return JSON.stringify(lastContent(channel));
 }
 
-function resumeNonce(markdown: string): string {
-  const match = markdown.match(/\/resume use ([a-f0-9-]+)/);
-  const nonce = match?.[1];
-  expect(nonce).toBeTypeOf('string');
-  if (!nonce) throw new Error('missing resume nonce');
-  return nonce;
+function resumeArgsFromCard(card: unknown): string[] {
+  return actionArgsFromCard(card, 'resume.use');
 }
 
-function resumeArgsFromCard(card: unknown): string[] {
+function actionArgsFromCard(card: unknown, cmd: string): string[] {
   const out: string[] = [];
   const visit = (value: unknown): void => {
     if (!value || typeof value !== 'object') return;
     const record = value as Record<string, unknown>;
     const action = record.value as Record<string, unknown> | undefined;
-    if (action?.cmd === 'resume.use' && typeof action.arg === 'string') out.push(action.arg);
+    if (action?.cmd === cmd && typeof action.arg === 'string') out.push(action.arg);
     for (const child of Object.values(record)) {
       if (Array.isArray(child)) child.forEach(visit);
       else visit(child);

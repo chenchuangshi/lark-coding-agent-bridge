@@ -143,7 +143,8 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | `/ws save <name>` | 把当前工作目录保存为命名工作空间 |
 | `/ws use <name>` | 切换到命名工作空间 |
 | `/ws remove <name>` | 删除命名工作空间 |
-| `/resume` | 恢复同 agent、工作目录、权限模式兼容的历史会话 |
+| `/resume [N]` | 查看历史会话；可恢复、归档或重命名 |
+| `/resume archived [N]` | 查看已归档会话；归档仅隐藏，不删除本机数据 |
 | `/status` | 查看 profile、agent、工作目录、会话、lark-cli 身份和运行状态 |
 | `/config` | 调整展示偏好、访问控制和 lark-cli 身份策略 |
 | `/invite user @某人` | 允许用户私聊使用 bot |
@@ -226,9 +227,28 @@ bridge 会检查所选目录存在、是目录，并且不是 `/`、Home 根、�
 | `~/.lark-channel/active-profile` | 最近选择的 profile |
 | `~/.lark-channel/profiles/<profile>/sessions.json` | 会话状态 |
 | `~/.lark-channel/profiles/<profile>/sessions.json.catalog.json` | agent-aware 会话索引 |
+| `~/.lark-channel/profiles/<profile>/session-meta.json` | 历史会话归档状态和自定义标题 |
 | `~/.lark-channel/profiles/<profile>/workspaces.json` | 当前和命名工作空间绑定 |
 | `~/.lark-channel/profiles/<profile>/secrets.enc` | profile 本地加密 secret |
 | `~/.lark-channel/profiles/<profile>/lark-cli/` | 当前 profile 的 lark-cli 目录 |
+
+### 可选：Robot Roster 与 SSH
+
+机器人远程操作按机器单独配置，不随 Git 仓库分发。配置文件是
+`~/.lark-channel/profiles/<profile>/robot.json`，建议使用 SSH 私钥：
+
+```json
+{
+  "rosterBaseUrl": "https://roster.example.com",
+  "sshUser": "robot-user",
+  "sshPort": 22,
+  "identityFile": "~/.ssh/id_ed25519"
+}
+```
+
+也可用 `LARK_ROBOT_ROSTER_URL`、`LARK_ROBOT_SSH_USER` 和
+`LARK_ROBOT_SSH_PASSWORD` 提供本机环境配置。不要把真实密码、私钥或
+`robot.json` 提交到源码仓库。聊天中不接受 SSH 密码；写操作必须通过确认卡。
 | `~/.lark-channel/profiles/<profile>/media/` | 附件缓存 |
 | `~/.lark-channel/profiles/<profile>/logs/` | 结构化运行日志 |
 | `~/.lark-channel/registry/processes.json` | 本机进程注册表 |
