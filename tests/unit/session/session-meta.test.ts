@@ -38,7 +38,11 @@ describe('SessionMetaStore', () => {
       previewSnapshot: 'old preview',
       sourceSnapshot: 'exec',
     });
-    expect((await stat(path)).mode & 0o777).toBe(0o600);
+    // Windows does not implement POSIX permission bits; the privacy guarantee
+    // is meaningful and testable only on POSIX filesystems.
+    if (process.platform !== 'win32') {
+      expect((await stat(path)).mode & 0o777).toBe(0o600);
+    }
     expect(JSON.parse(await readFile(path, 'utf8'))).toHaveLength(1);
   });
 

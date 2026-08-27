@@ -9,6 +9,15 @@ vi.mock('node:child_process', async (importOriginal) => ({
   spawnSync: mocks.spawnSync,
 }));
 
+vi.mock('node:os', async (importOriginal) => {
+  const original = await importOriginal<typeof import('node:os')>();
+  return {
+    ...original,
+    // These tests emulate launchd even when the CI runner itself is Windows.
+    userInfo: () => ({ ...original.userInfo(), uid: 501 }),
+  };
+});
+
 const { getServiceAdapter } = await import('../../../src/daemon/service-adapter');
 const { launchAgentLabel } = await import('../../../src/daemon/paths');
 
