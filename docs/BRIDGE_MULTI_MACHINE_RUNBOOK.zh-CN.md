@@ -3,13 +3,13 @@
 ## 文档状态
 
 - 用途：供后续 Agent 在没有历史会话时执行 Windows 与 Ubuntu 的同步、构建、安装、升级、发布、回滚、全新部署和故障诊断。
-- 最后更新日期：2026-08-28。
-- 最后验证日期：2026-08-28。
+- 最后更新日期：2026-09-03。
+- 最后验证日期：2026-09-03。
 - 最后验证的 Bridge 版本：`v0.8.0`。
-- 最后验证的 commit：`5e2aabb9bc9fd251ca5c5851a7f75b14f791a844`。
+- 最后验证的 commit：`da06ef26ac4e9c075c7d21cc2e46be3b3d7d87a0`（未打 tag）。
 - 适用平台：Ubuntu Bash、Windows PowerShell。
 - Windows 验证状态：用户提供的当前机器实测为构建成功、TypeScript 类型检查通过；700 项测试中 695 项通过、5 项失败，失败涉及缺少 `sh`、Codex 测试二进制兼容性和 Bridge 环境变量。不是“Windows 全部测试通过”。
-- Ubuntu 验证状态：2026-08-28 在本机实测构建和类型检查通过；700 项测试中 698 项通过、2 项失败，失败由当前 Bridge 注入的 profile 环境变量影响。不是“Ubuntu 全部测试通过”。
+- Ubuntu 验证状态：2026-09-03 在本机实测构建和类型检查通过；721 项测试中 719 项通过、2 项失败，失败由当前 Bridge 注入的 profile 环境变量影响。不是“Ubuntu 全部测试通过”。
 - 维护要求：每次同步、部署、升级或发布前先读本文；实际命令与本文不一致时不得静默绕过，完成安全操作后同时修正文档，并标明验证平台。
 
 本文是操作手册，不替代项目的 `README.zh.md`。未经实际验证的内容标记为“待验证”。
@@ -836,13 +836,13 @@ lark-cli config default-as auto
 - 全局运行：npm 全局 Bridge `0.8.0`。
 - 结论：构建可用，但测试不是全绿；相关差异仍需后续修复或明确平台预期。
 
-### 12.2 2026-08-28 Ubuntu 记录（本机实测）
+### 12.2 2026-09-03 Ubuntu 记录（本机实测）
 
 - 源码：`/home/wujie/Chance/lark-coding-agent-bridge`。
-- HEAD/tag：`5e2aabb9bc9fd251ca5c5851a7f75b14f791a844` / `v0.8.0`。
+- HEAD/tag：`da06ef26ac4e9c075c7d21cc2e46be3b3d7d87a0` / 未打 tag（版本仍为 `v0.8.0`）。
 - `pnpm build`：通过。
 - `pnpm typecheck`：通过。
-- `pnpm test`：700 项，698 通过、2 失败。
+- `pnpm test`：721 项，719 通过、2 失败。
 - 失败用例：
   - `tests/integration/cli/secrets-profile.test.ts` 的 active-first secret 解析断言。
   - `tests/unit/cli/preflight.test.ts` 的首次 bind 环境变量断言。
