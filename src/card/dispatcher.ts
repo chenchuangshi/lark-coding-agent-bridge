@@ -10,6 +10,12 @@ import { log } from '../core/logger';
 import { canUseDm, canUseGroup } from '../policy/access';
 import type { RunExecutor } from '../runtime/run-executor';
 import type { SessionCatalog } from '../session/catalog';
+import type {
+  CodexAppServerOptions,
+  CodexThreadDetails,
+  CodexThreadHistoryEntry,
+  ListCodexThreadHistoryOptions,
+} from '../session/codex-history';
 import type { SessionMetaStore } from '../session/session-meta';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
@@ -42,6 +48,25 @@ export interface CardDispatchDeps {
   callbackAuth?: CallbackAuth;
   callbackPolicyFingerprint?: string;
   callbackPolicyFingerprintForScope?: (scope: string) => string | undefined;
+  codexHistoryProvider?: (
+    options: ListCodexThreadHistoryOptions,
+  ) => Promise<CodexThreadHistoryEntry[]>;
+  codexArchiveThread?: (options: CodexAppServerOptions, threadId: string) => Promise<void>;
+  codexUnarchiveThread?: (options: CodexAppServerOptions, threadId: string) => Promise<void>;
+  codexSetThreadName?: (
+    options: CodexAppServerOptions,
+    threadId: string,
+    name: string,
+  ) => Promise<void>;
+  codexReadThread?: (
+    options: CodexAppServerOptions,
+    threadId: string,
+  ) => Promise<CodexThreadDetails>;
+  codexForkThread?: (
+    options: CodexAppServerOptions,
+    threadId: string,
+    lastTurnId: string,
+  ) => Promise<CodexThreadDetails>;
 }
 
 export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
@@ -116,6 +141,12 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
       controls: deps.controls,
       formValue,
       fromCardAction: true,
+      ...(deps.codexHistoryProvider ? { codexHistoryProvider: deps.codexHistoryProvider } : {}),
+      ...(deps.codexArchiveThread ? { codexArchiveThread: deps.codexArchiveThread } : {}),
+      ...(deps.codexUnarchiveThread ? { codexUnarchiveThread: deps.codexUnarchiveThread } : {}),
+      ...(deps.codexSetThreadName ? { codexSetThreadName: deps.codexSetThreadName } : {}),
+      ...(deps.codexReadThread ? { codexReadThread: deps.codexReadThread } : {}),
+      ...(deps.codexForkThread ? { codexForkThread: deps.codexForkThread } : {}),
     };
 
     const [name, ...rest] = cmd.split('.');

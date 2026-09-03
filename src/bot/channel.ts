@@ -1,4 +1,5 @@
 import type {
+  ChatMember,
   LarkChannel,
   LarkChannelOptions,
   NormalizedMessage,
@@ -18,7 +19,7 @@ import type { AgentAdapter, AgentEvent } from '../agent/types';
 import { handleCardAction } from '../card/dispatcher';
 import { CallbackAuth } from '../card/callback-auth';
 import { CallbackNonceStore } from '../card/callback-store';
-import { renderCard } from '../card/run-renderer';
+import { renderCard, renderQuickControlsCard } from '../card/run-renderer';
 import {
   finalizeIfRunning,
   initialState,
@@ -69,6 +70,12 @@ import { fetchQuotedContext, fetchTopicContext, type QuotedContext } from './quo
 import { lookupMessageThreadId } from './thread-id';
 import { addWorkingReaction, removeReaction } from './reaction';
 import { fetchKnownChats } from './lark-info';
+import {
+  formatBotHandoff,
+  HandoffTracker,
+  parseBotHandoff,
+  type BotHandoff,
+} from './handoff';
 import type { AppPaths } from '../config/app-paths';
 import {
   consumeCotEvents,
@@ -187,6 +194,9 @@ export interface StartChannelDeps {
 export async function startChannel(deps: StartChannelDeps): Promise<BridgeChannel> {
   const { cfg, agent, sessions, sessionCatalog, sessionMeta, workspaces, controls } = deps;
   const activeRuns = new ActiveRuns();
+  // Tracks bot-to-bot tasks for dedupe and to constrain the one permitted
+  // return hop. This is intentionally per bridge process; stale tasks expire.
+  const handoffTracker = new HandoffTracker();
   // ChatModeCache stays per-bridge-instance — invalidated on restart along
   // with everything else. Topic-mode chats only need one chat.get() call ever.
   const chatModeCache = new ChatModeCache();
@@ -244,6 +254,13 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       dmMode: 'open',
       requireMention: false,
       respondToMentionAll: false,
+      botLoopGuard: {
+        enabled: true,
+        windowMs: 60_000,
+        maxBotMentions: 5,
+        scope: 'chat',
+        onTrip: 'reject',
+      },
     },
     // Disable per-chat serialization so we can implement our own
     // debounce + run-chain policy (see pending-queue + runChain below).
@@ -253,6 +270,9 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     // Attach raw Feishu event body to normalized events so we can read fields
     // the normalizer drops (e.g. action.form_value on CardKit 2.0 form submits).
     includeRawEvent: true,
+    // Bot collaboration needs stable sender names in bridge_context. This is
+    // best-effort and backed by the SDK's per-chat roster cache.
+    resolveSenderNames: true,
     outbound: {
       streamThrottleMs: 400,
     },
@@ -323,6 +343,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           lastRunModelByScope,
           scope,
           mode,
+          handoffTracker,
         });
       } catch (err) {
         log.fail('flush', err);
@@ -812,6 +833,7 @@ interface RunBatchDeps {
   lastRunModelByScope: Map<string, string>;
   scope: string;
   mode: ChatMode;
+  handoffTracker: HandoffTracker;
 }
 
 async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
@@ -830,6 +852,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     lastRunModelByScope,
     scope,
     mode,
+    handoffTracker,
   } = deps;
   if (batch.length === 0) return;
   const firstMsg = batch[0];
@@ -917,12 +940,24 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const prevModel = lastRunModelByScope.get(scope);
   const modelSwitched = prevModel !== undefined && prevModel !== modelSelection;
   lastRunModelByScope.set(scope, modelSelection);
-  const extraInstructions = modelSwitched
-    ? [
-        `用户刚把本会话使用的模型切换为「${modelLabel(agentKind, modelPref)}」。` +
-          '之前的对话里可能提到别的模型,请以当前模型为准;若被问到你用的是什么模型,据此回答。',
-      ]
-    : undefined;
+  const incomingHandoff = batch
+    .map((message) => parseBotHandoff(message.content).handoff)
+    .find((handoff): handoff is BotHandoff => Boolean(handoff));
+  const extraInstructions: string[] = [];
+  if (modelSwitched) {
+    extraInstructions.push(
+      `用户刚把本会话使用的模型切换为「${modelLabel(agentKind, modelPref)}」。` +
+        '之前的对话里可能提到别的模型,请以当前模型为准;若被问到你用的是什么模型,据此回答。',
+    );
+  }
+  if (incomingHandoff) {
+    extraInstructions.push(
+      `这是另一个 bot 委派的任务（task_id=${incomingHandoff.taskId}）。请先完成委派内容；` +
+        `如需回传结果，只输出一个 bot_handoff 标记，target 使用 return_to=${incomingHandoff.returnTo ?? firstMsg.senderId}` +
+        `，task_id 保持 ${incomingHandoff.taskId}，hop 使用 ${Math.min(incomingHandoff.hop + 1, 1)}，` +
+        '不要把结果转交给第三个机器人。',
+    );
+  }
 
   const robotContext = await buildRobotContextForText(
     controls.profile,
@@ -935,14 +970,21 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     return undefined;
   });
 
+  // Expose the bot roster to the agent so a requested handoff can use an
+  // explicit open_id instead of guessing from a display name. Failure is
+  // non-fatal: inbound mentions still provide identities opportunistically.
+  const chatBots =
+    firstMsg.chatType === 'p2p' ? [] : await getChatBotsBestEffort(channel, chatId);
+
   const prompt = buildPrompt(
     batch,
     attachments,
     quotes,
     topicContext,
     channel.botIdentity,
-    extraInstructions,
+    extraInstructions.length > 0 ? extraInstructions : undefined,
     robotContext,
+    chatBots,
   );
   log.info('prompt', 'built', {
     promptChars: prompt.length,
@@ -1140,6 +1182,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           replyMode,
           sendOpts,
           cardRenderOptions,
+          chatBots,
+          botIdentity: channel.botIdentity,
+          handoffTracker,
         });
         return;
       }
@@ -1162,7 +1207,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
                 producerStarted = true;
                 if (progress.abandoned()) return;
                 cardCtrl = ctrl;
-                await ctrl.update(renderCard(filterForPrefs(latestState), cardRenderOptions));
+                await ctrl.update(renderCard(sanitizeHandoffState(filterForPrefs(latestState)), cardRenderOptions));
                 await renderDone;
               },
             },
@@ -1180,7 +1225,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           latestState = state;
           if (shouldOpenProgressStream(filterForPrefs(state))) progress.ensureOpen();
           if (cardCtrl) {
-            await cardCtrl.update(renderCard(filterForPrefs(state), cardRenderOptions));
+            await cardCtrl.update(renderCard(sanitizeHandoffState(filterForPrefs(state)), cardRenderOptions));
           }
         },
       );
@@ -1192,10 +1237,10 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           producerStarted: () => producerStarted,
           fallback: async (state) => {
             if (controls.profileConfig.agentKind === 'codex') return;
-            if (renderText(filterForPrefs(state)).trim() === '') return;
+            if (renderText(sanitizeHandoffState(filterForPrefs(state))).trim() === '') return;
             await channel.send(
               chatId,
-              { card: renderCard(filterForPrefs(state), cardRenderOptions) },
+              { card: renderCard(sanitizeHandoffState(filterForPrefs(state)), cardRenderOptions) },
               sendOpts,
             );
           },
@@ -1214,6 +1259,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           replyMode,
           sendOpts,
           cardRenderOptions,
+          chatBots,
+          botIdentity: channel.botIdentity,
+          handoffTracker,
         });
       }
     } else if (replyMode === 'markdown') {
@@ -1228,7 +1276,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
               producerStarted = true;
               if (progress.abandoned()) return;
               markdownCtrl = ctrl;
-              await ctrl.setContent(renderText(filterForPrefs(latestState)));
+              await ctrl.setContent(renderText(sanitizeHandoffState(filterForPrefs(latestState))));
               await renderDone;
             },
           },
@@ -1245,7 +1293,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           latestState = state;
           if (shouldOpenProgressStream(filterForPrefs(state))) progress.ensureOpen();
           if (markdownCtrl) {
-            await markdownCtrl.setContent(renderText(filterForPrefs(state)));
+            await markdownCtrl.setContent(renderText(sanitizeHandoffState(filterForPrefs(state))));
           }
         },
       );
@@ -1257,7 +1305,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           producerStarted: () => producerStarted,
           fallback: async (state) => {
             if (controls.profileConfig.agentKind === 'codex') return;
-            const body = renderText(filterForPrefs(state));
+            const body = renderText(sanitizeHandoffState(filterForPrefs(state)));
             if (body.trim()) {
               await channel.send(chatId, { markdown: body }, sendOpts);
             }
@@ -1277,6 +1325,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           replyMode,
           sendOpts,
           cardRenderOptions,
+          chatBots,
+          botIdentity: channel.botIdentity,
+          handoffTracker,
         });
       }
     } else {
@@ -1302,6 +1353,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         replyMode,
         sendOpts,
         cardRenderOptions,
+        chatBots,
+        botIdentity: channel.botIdentity,
+        handoffTracker,
       });
     }
   } catch (err) {
@@ -1471,25 +1525,39 @@ async function sendFinalReply(input: {
   replyMode: ReturnType<typeof getMessageReplyMode>;
   sendOpts: { replyTo: string; replyInThread?: boolean };
   cardRenderOptions: { signCallback?: (action: string) => string };
+  chatBots: ChatMember[];
+  botIdentity?: { openId: string; name?: string };
+  handoffTracker: HandoffTracker;
 }): Promise<void> {
-  const body = renderText(input.state);
+  const rawBody = renderText(input.state);
+  const parsed = parseBotHandoff(rawBody);
+  if (parsed.errors.length > 0) {
+    log.warn('handoff', 'parse-rejected', {
+      scope: input.scope,
+      errors: parsed.errors,
+    });
+  }
+  const body = parsed.cleanText;
+  const cleanState = sanitizeHandoffState(input.state);
 
   // Nothing deliverable to send (agent produced no text on a clean finish;
   // error/interrupt/timeout keep `body` non-empty via their notices). Skip
   // rather than post an empty card that renders as "(no content)".
-  if (!body.trim()) {
+  if (!body.trim() && !parsed.handoff) {
     log.info('outbound', 'skip-empty', { scope: input.scope, mode: input.replyMode });
     return;
   }
 
   if (input.replyMode === 'card') {
-    const result = await input.channel.send(
-      input.chatId,
-      { card: renderCard(input.state, input.cardRenderOptions) },
-      input.sendOpts,
-    );
-    requireMessageReceipt(result, 'card');
-    log.info('outbound', 'sent', outboundLogFields(input, 'card', body, result));
+    if (body.trim()) {
+      const result = await input.channel.send(
+        input.chatId,
+        { card: renderCard(cleanState, input.cardRenderOptions) },
+        input.sendOpts,
+      );
+      requireMessageReceipt(result, 'card');
+      log.info('outbound', 'sent', outboundLogFields(input, 'card', body, result));
+    }
   } else if (input.replyMode === 'markdown') {
     if (body.trim()) {
       const result = await input.channel.send(
@@ -1499,6 +1567,7 @@ async function sendFinalReply(input: {
       );
       requireMessageReceipt(result, 'markdown');
       log.info('outbound', 'sent', outboundLogFields(input, 'markdown', body, result));
+      await sendQuickControls(input);
     }
   } else if (body.trim()) {
     const result = await input.channel.send(
@@ -1508,6 +1577,125 @@ async function sendFinalReply(input: {
     );
     requireMessageReceipt(result, 'text');
     log.info('outbound', 'sent', outboundLogFields(input, 'text', body, result));
+    await sendQuickControls(input);
+  }
+
+  if (parsed.handoff) {
+    await dispatchBotHandoff({
+      ...input,
+      handoff: parsed.handoff,
+    });
+  }
+}
+
+function sanitizeHandoffState(state: RunState): RunState {
+  return {
+    ...state,
+    blocks: state.blocks.map((block) => {
+      if (block.kind !== 'text') return block;
+      return { ...block, content: parseBotHandoff(block.content).cleanText };
+    }),
+  };
+}
+
+async function dispatchBotHandoff(input: {
+  channel: LarkChannel;
+  chatId: string;
+  scope: string;
+  sendOpts: { replyTo: string; replyInThread?: boolean };
+  chatBots: ChatMember[];
+  botIdentity?: { openId: string; name?: string };
+  handoffTracker: HandoffTracker;
+  handoff: BotHandoff;
+}): Promise<void> {
+  const self = input.botIdentity?.openId;
+  if (!self) {
+    log.warn('handoff', 'missing-self-identity', { scope: input.scope });
+    return;
+  }
+  const target = input.handoff.target;
+  if (target === self) {
+    log.warn('handoff', 'self-target-rejected', { scope: input.scope, taskId: input.handoff.taskId });
+    return;
+  }
+  const bot = input.chatBots.find((candidate) => candidate.id === target);
+  if (!bot || bot.isBot === false) {
+    log.warn('handoff', 'target-not-in-roster', {
+      scope: input.scope,
+      taskId: input.handoff.taskId,
+      target,
+    });
+    return;
+  }
+
+  if (input.handoff.hop === 0) {
+    if (!input.handoffTracker.begin(input.handoff.taskId, self, target)) {
+      log.info('handoff', 'duplicate-suppressed', {
+        scope: input.scope,
+        taskId: input.handoff.taskId,
+      });
+      return;
+    }
+  } else if (!input.handoffTracker.allowReturn(input.handoff.taskId, target)) {
+    log.warn('handoff', 'return-rejected', {
+      scope: input.scope,
+      taskId: input.handoff.taskId,
+      target,
+    });
+    return;
+  }
+
+  const outbound = formatBotHandoff({
+    ...input.handoff,
+    // The first hop always returns to this bridge. Agents do not get to
+    // redirect a task to an arbitrary third bot.
+    ...(input.handoff.hop === 0 ? { returnTo: self } : {}),
+  });
+  const result = await input.channel.send(
+    input.chatId,
+    { markdown: outbound },
+    {
+      ...input.sendOpts,
+      mentions: [{ key: '@_user_1', openId: bot.id, name: bot.name, isBot: true }],
+      resolveMentionsInText: false,
+    },
+  );
+  requireMessageReceipt(result, 'handoff');
+  log.info('handoff', 'sent', {
+    scope: input.scope,
+    taskId: input.handoff.taskId,
+    target: bot.id,
+    hop: input.handoff.hop,
+    messageId: result.messageId,
+  });
+}
+
+async function sendQuickControls(input: {
+  channel: LarkChannel;
+  chatId: string;
+  scope: string;
+  sendOpts: { replyTo: string; replyInThread?: boolean };
+}): Promise<void> {
+  try {
+    const result = await input.channel.send(
+      input.chatId,
+      { card: renderQuickControlsCard() },
+      input.sendOpts,
+    );
+    requireMessageReceipt(result, 'quick-controls');
+    log.info('outbound', 'sent-controls', {
+      scope: input.scope,
+      messageId: result.messageId,
+      replyTo: input.sendOpts.replyTo,
+      replyInThread: input.sendOpts.replyInThread === true,
+    });
+  } catch (err) {
+    // The answer has already been delivered, so a shortcut-card failure must
+    // not turn a successful run into an outbound failure.
+    log.warn('outbound', 'controls-failed', {
+      scope: input.scope,
+      err: err instanceof Error ? err.message : String(err),
+    });
   }
 }
 
@@ -1830,6 +2018,7 @@ function buildPrompt(
   botIdentity?: { openId: string; name?: string },
   extraInstructions?: string[],
   robotContext?: Record<string, unknown>,
+  chatBots: ChatMember[] = [],
 ): string {
   const first = batch[0];
   if (!first) return '';
@@ -1865,6 +2054,15 @@ function buildPrompt(
       ...(senderType ? { senderType } : {}),
       ...(botIdentity?.openId ? { botOpenId: botIdentity.openId } : {}),
       ...(mentions.length > 0 ? { mentions } : {}),
+      ...(chatBots.length > 0
+        ? {
+            chatBots: chatBots.map((bot) => ({
+              openId: bot.id,
+              ...(bot.name ? { name: bot.name } : {}),
+              ...(bot.id === botIdentity?.openId ? { isSelf: true } : {}),
+            })),
+          }
+        : {}),
       ...(first.threadId ? { threadId: first.threadId } : {}),
       messageIds: batch.map((m) => m.messageId),
       source: 'im',
@@ -1880,6 +2078,25 @@ function buildPrompt(
     attachments: attachments.map(toPromptAttachment),
     ...(robotContext ? { robotContext } : {}),
   });
+}
+
+async function getChatBotsBestEffort(
+  channel: LarkChannel,
+  chatId: string,
+): Promise<ChatMember[]> {
+  // Keep the bridge compatible with older SDK builds and lightweight test
+  // doubles that predate getChatBots(). Inbound mention identities remain a
+  // usable fallback when roster discovery is unavailable.
+  if (typeof channel.getChatBots !== 'function') return [];
+  try {
+    return await channel.getChatBots(chatId);
+  } catch (err) {
+    log.warn('bot-roster', 'fetch-failed', {
+      chatId,
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return [];
+  }
 }
 
 /**

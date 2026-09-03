@@ -31,6 +31,13 @@ describe('bridge system prompt bot collaboration rules', () => {
   it('documents the senderType and mentions context fields', () => {
     expect(BRIDGE_SYSTEM_PROMPT).toContain('senderType');
     expect(BRIDGE_SYSTEM_PROMPT).toContain('mentions');
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('chatBots');
+  });
+
+  it('gives the agent an executable structured-mention handoff command', () => {
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('lark-cli im +messages-send');
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('<at user_id=');
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('senderId');
   });
 
   it('tells the agent not to mimic the batch sender annotation format', () => {

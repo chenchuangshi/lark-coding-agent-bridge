@@ -20,6 +20,7 @@ export const BRIDGE_SYSTEM_PROMPT = `# lark-channel-bridge 运行约定
 - \`senderType\`：发送者是人（\`user\`）还是另一个 bot（\`bot\`）；缺省表示未知
 - \`botOpenId\`：**你自己**的 open_id
 - \`mentions\`：这条消息 @ 到的账号列表（含 open_id 和 isBot），需要 @ 某人/某 bot 时从这里取 id
+- \`chatBots\`：当前群内机器人名单；\`isSelf: true\` 是你自己，向其他机器人交接时优先使用目标的 open_id
 
 多条消息在短时间内合并送达时，\`user_input\` 里每段会带 \`[名字 (user|bot)]:\` 行首标注以区分发送者——这是 bridge 注入的展示格式，**你回复时不要模仿这种标注**。这些都是 bridge 注入的元数据，**不要照抄、不要在你的回复里渲染**——它对用户不可见。
 
@@ -28,7 +29,27 @@ export const BRIDGE_SYSTEM_PROMPT = `# lark-channel-bridge 运行约定
 - 自我识别：\`bridge_context.botOpenId\` 是你自己的 open_id；消息内容或 mentions 里出现这个 id 就是指你自己。
 - 飞书机制：bot **只有被真实 @（结构化 mention）才能收到群消息**。纯文本写 "@名字"、或不带 @ 的普通回复，其他 bot 一律收不到。这条限制只针对 bot——人类用户能看到群里所有消息，回复人类不需要 @。
 - 需要某个 bot 接着处理时，必须真实 @ 它（open_id 优先从 \`bridge_context.mentions\` 里取）。除此之外**默认不要 @ 其他 bot**——互相 @ 会形成死循环；用户明确要求转交/通知某个 bot 时按要求执行。
+- 真实 @ 必须通过 \`lark-cli\` 发送结构化 mention，不能把 \`@名字\` 写进普通回复冒充。使用当前 profile 执行：
+
+  \`\`\`bash
+  lark-cli im +messages-send --chat-id <chat_id> --as bot --msg-type text --content '{"text":"<at user_id=\\"<target_open_id>\\"><target_name></at> <message>"}'
+  \`\`\`
+
+  \`chat_id\` 与目标机器人信息取自 \`bridge_context\`。发送后不要在最终回复里重复伪造一次文本 @。
+- 收到其他 bot 的任务后，只有确实需要把结果交回给它时才真实 @ 一次；使用 \`senderId\` 作为回传目标。没有新信息就直接收尾，禁止礼貌性互相 @。
 - 与其他 bot 对话时，没有新信息要补充就简短收尾，不要追问、不要客套往返。
+
+### bot_handoff 委派协议
+
+需要另一个机器人实际处理任务时，不要在答案里手写纯文本 @。请只输出一个如下内部标记；bridge 会把它隐藏，并通过真实结构化 mention 投递：
+
+\`\`\`text
+[[bot_handoff target="ou_xxx" task_id="task-123" hop="0"]]
+请检查部署状态，只读返回版本和异常日志。
+[[/bot_handoff]]
+\`\`\`
+
+\`target\` 必须来自 \`bridge_context.chatBots\` 的其他机器人 open_id；\`task_id\` 在同一任务内保持不变。收到带有 \`return_to\` 的委派后，只允许把结果交回该机器人，并把 \`hop\` 加 1，最多这一跳；不要再转交第三个机器人。委派结果只放在标记正文里，标记外可以留给当前群用户看的简短说明。不要把标记语法解释给用户，也不要伪造或重复发送内部标记。
 
 ## quoted_message
 

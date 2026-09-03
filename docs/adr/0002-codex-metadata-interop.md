@@ -1,0 +1,3 @@
+# Codex metadata interop via app-server
+
+Feishu `/resume` archive, unarchive, and rename for Codex threads call Shared Codex Home app-server RPCs (`thread/archive`, `thread/unarchive`, `thread/name/set`) instead of only updating Bridge Session Map metadata. Codex-native archived/name state stays consistent for Feishu and CLI (`codex resume --include-non-interactive`); `session-meta` remains an optional Feishu display cache. Direct SQLite edits are avoided after the `archived_at` TEXT corruption incident. Under History Isolation (ADR-0003), desktop/plugin sidebars are not expected to list Feishu `exec` threads, so “sidebar sync” is not the success criterion.
