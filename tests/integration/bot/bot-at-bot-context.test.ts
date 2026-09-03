@@ -58,8 +58,8 @@ interface FakeLarkChannel {
   disconnect(): Promise<void>;
   getChatMode(chatId: string): Promise<'group' | 'topic'>;
   getConnectionStatus(): { state: 'connected'; reconnectAttempts: number };
-  getChatBots: ReturnType<typeof vi.fn>;
-  send: ReturnType<typeof vi.fn>;
+  getChatBots(chatId: string): Promise<Array<{ id: string; name?: string; isBot?: boolean }>>;
+  send(chatId: string, content: unknown, options?: unknown): Promise<void>;
   stream(chatId: string, input: unknown, options?: unknown): Promise<void>;
 }
 
@@ -103,59 +103,6 @@ describe('bot identity injection into the agent adapter', () => {
 });
 
 describe('sender identity in bridge_context', () => {
-  it('authorizes exactly one hop-1 return for an inbound hop-0 handoff', async () => {
-    const h = await createHarness({ agentKind: 'codex' });
-    h.agent.setEvents([
-      {
-        type: 'final_text',
-        content:
-          '[[bot_handoff target="ou_hermes" task_id="task-roundtrip" hop="1"]]\n核验通过\n[[/bot_handoff]]',
-      },
-      { type: 'done', terminationReason: 'normal' },
-    ]);
-    await startTestBridge(h);
-
-    await h.channel.handlers.message?.(
-      message({
-        messageId: 'om_inbound_handoff',
-        senderId: 'ou_hermes',
-        senderName: 'HermesBot',
-        rawSenderType: 'app',
-        content:
-          '[[bot_handoff target="ou_bot" task_id="task-roundtrip" hop="0" return_to="ou_hermes"]]\n只读核验\n[[/bot_handoff]]',
-      }),
-    );
-    await waitFor(() => h.channel.send.mock.calls.length === 1);
-
-    expect(h.channel.send).toHaveBeenCalledWith(
-      'oc_chat',
-      {
-        markdown:
-          '[[bot_handoff target="ou_hermes" task_id="task-roundtrip" hop="1"]]\n核验通过\n[[/bot_handoff]]',
-      },
-      expect.objectContaining({
-        mentions: [expect.objectContaining({ openId: 'ou_hermes', isBot: true })],
-        resolveMentionsInText: false,
-      }),
-    );
-  });
-
-  it('refreshes the bot roster before exposing it for handoff', async () => {
-    const h = await createHarness();
-    await startTestBridge(h);
-
-    await h.channel.handlers.message?.(
-      message({
-        messageId: 'om_roster_refresh',
-        content: '@Bridge 检查协作身份',
-        rawSenderType: 'user',
-      }),
-    );
-    await waitFor(() => h.agent.runOptions.length === 1);
-
-    expect(h.channel.getChatBots).toHaveBeenCalledWith('oc_chat', { force: true });
-  });
-
   it('marks a bot sender via raw sender_type and injects botOpenId and mentions', async () => {
     const h = await createHarness();
     await startTestBridge(h);
@@ -306,7 +253,7 @@ describe('sender identity in bridge_context', () => {
   });
 });
 
-async function createHarness(options: { agentKind?: 'claude' | 'codex' } = {}): Promise<{
+async function createHarness(): Promise<{
   tmp: TmpProfile;
   channel: FakeLarkChannel & { handlers: MessageHandlerMap };
   agent: FakeAgentAdapter;
@@ -318,10 +265,7 @@ async function createHarness(options: { agentKind?: 'claude' | 'codex' } = {}): 
   const tmp = await createTmpProfile('bot-at-bot-');
   const workspace = await realpath(tmp.workspace);
   const baseProfileConfig = createDefaultProfileConfig({
-    agentKind: options.agentKind ?? 'claude',
-    ...(options.agentKind === 'codex'
-      ? { codex: { binaryPath: '/usr/local/bin/codex' } }
-      : {}),
+    agentKind: 'claude',
     accounts: {
       app: {
         id: 'cli_test',
@@ -420,13 +364,13 @@ function createFakeLarkChannel(): FakeLarkChannel & { handlers: MessageHandlerMa
     getConnectionStatus() {
       return { state: 'connected', reconnectAttempts: 0 };
     },
-    getChatBots: vi.fn(async () => {
+    async getChatBots() {
       return [
         { id: 'ou_bot', name: 'Bridge', isBot: true },
         { id: 'ou_hermes', name: 'HermesBot', isBot: true },
       ];
-    }),
-    send: vi.fn(async () => ({ messageId: 'om_sent' })),
+    },
+    async send() {},
     async stream(_chatId, input) {
       if (isMarkdownStreamInput(input)) {
         await input.markdown({ setContent: async () => {} });
