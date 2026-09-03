@@ -50,4 +50,12 @@ describe('handoff tracker', () => {
     expect(tracker.allowReturn('task-1', 'ou_b', 12)).toBe(false);
     expect(tracker.allowReturn('task-1', 'ou_a', 1011)).toBe(false);
   });
+
+  it('authorizes a receiver to return an accepted inbound task', () => {
+    const tracker = new HandoffTracker(1000);
+    expect(tracker.acceptIncoming('task-2', 'ou_source', 'ou_receiver', 10)).toBe(true);
+    expect(tracker.allowReturn('task-2', 'ou_source', 11)).toBe(true);
+    expect(tracker.allowReturn('task-2', 'ou_other', 11)).toBe(false);
+    expect(tracker.acceptIncoming('task-2', 'ou_other', 'ou_receiver', 12)).toBe(false);
+  });
 });

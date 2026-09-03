@@ -943,6 +943,33 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const incomingHandoff = batch
     .map((message) => parseBotHandoff(message.content).handoff)
     .find((handoff): handoff is BotHandoff => Boolean(handoff));
+  if (incomingHandoff?.hop === 0) {
+    const self = channel.botIdentity?.openId;
+    const source = incomingHandoff.returnTo ?? firstMsg.senderId;
+    const senderIsOpenId = firstMsg.senderId.startsWith('ou_');
+    const returnRouteMatchesSender =
+      !incomingHandoff.returnTo || !senderIsOpenId || incomingHandoff.returnTo === firstMsg.senderId;
+    if (!self) {
+      log.warn('handoff', 'incoming-missing-self-identity', {
+        scope,
+        taskId: incomingHandoff.taskId,
+      });
+    } else if (!returnRouteMatchesSender) {
+      log.warn('handoff', 'incoming-return-route-mismatch', {
+        scope,
+        taskId: incomingHandoff.taskId,
+        sender: firstMsg.senderId,
+        returnTo: incomingHandoff.returnTo,
+      });
+    } else if (!handoffTracker.acceptIncoming(incomingHandoff.taskId, source, self)) {
+      log.warn('handoff', 'incoming-task-route-conflict', {
+        scope,
+        taskId: incomingHandoff.taskId,
+        source,
+        target: self,
+      });
+    }
+  }
   const extraInstructions: string[] = [];
   if (modelSwitched) {
     extraInstructions.push(
@@ -2089,7 +2116,13 @@ async function getChatBotsBestEffort(
   // usable fallback when roster discovery is unavailable.
   if (typeof channel.getChatBots !== 'function') return [];
   try {
-    return await channel.getChatBots(chatId);
+    // A stale SDK roster is unsafe for bot-to-bot routing: the target open_id
+    // is used for a real structured mention and a cached value can point at a
+    // bot that has since been reinstalled or whose app credentials changed.
+    // Force a REST refresh for every batch where the roster is consumed. This
+    // is intentionally best-effort; inbound mentions remain a fallback when
+    // the endpoint is unavailable (for example, due to missing permissions).
+    return await channel.getChatBots(chatId, { force: true });
   } catch (err) {
     log.warn('bot-roster', 'fetch-failed', {
       chatId,

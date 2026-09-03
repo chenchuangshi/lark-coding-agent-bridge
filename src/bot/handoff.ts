@@ -114,6 +114,19 @@ export class HandoffTracker {
     return true;
   }
 
+  /**
+   * Register a hop-0 task received by this bridge so its eventual hop-1 reply
+   * is authorized locally. Each bridge has its own in-memory ledger; the
+   * receiver therefore cannot rely on the sender's `begin()` record.
+   */
+  acceptIncoming(taskId: string, source: string, target: string, now = Date.now()): boolean {
+    this.prune(now);
+    const existing = this.records.get(taskId);
+    if (existing) return existing.source === source && existing.target === target;
+    this.records.set(taskId, { source, target, expiresAt: now + this.ttlMs });
+    return true;
+  }
+
   allowReturn(taskId: string, target: string, now = Date.now()): boolean {
     this.prune(now);
     const record = this.records.get(taskId);
