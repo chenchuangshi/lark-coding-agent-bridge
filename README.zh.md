@@ -143,7 +143,7 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | `/ws save <name>` | 把当前工作目录保存为命名工作空间 |
 | `/ws use <name>` | 切换到命名工作空间 |
 | `/ws remove <name>` | 删除命名工作空间 |
-| `/resume [N]` | 查看历史会话；可切换、归档或重命名 |
+| `/resume [N]` | 查看历史会话；可恢复、归档或重命名 |
 | `/resume archived [N]` | 查看已归档会话；归档仅隐藏，不删除本机数据 |
 | `/status` | 查看 profile、agent、工作目录、会话、lark-cli 身份和运行状态 |
 | `/config` | 调整展示偏好、访问控制和 lark-cli 身份策略 |
@@ -161,10 +161,6 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | `/help` | 帮助卡片 |
 
 私聊不需要 @。群和话题群默认必须 `@bot`；`@all` 会被忽略。支持的云文档评论里 @bot 就会触发回复。
-
-### 任务卡片快捷操作
-
-运行中的任务卡片显示「终止」按钮；任务结束后会显示一个「状态」快捷按钮。卡片回复模式把按钮放在结果卡底部，Markdown/纯文本模式紧跟结果发送一张紧凑控制卡。点击「状态」后仍可进入「切换会话」「新会话」等操作。按钮直接调用 bridge 的内置命令，不需要配置或发布飞书机器人自定义菜单。
 
 ## 回复展示与 COT
 

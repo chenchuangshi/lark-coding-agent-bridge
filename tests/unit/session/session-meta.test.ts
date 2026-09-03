@@ -60,42 +60,6 @@ describe('SessionMetaStore', () => {
     await store.flush();
   });
 
-  it('persists bridge-owned fork provenance and lists it only in the matching cwd and state', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'session-meta-'));
-    roots.push(root);
-    const path = join(root, 'session-meta.json');
-    const identity = {
-      agentId: 'codex' as const,
-      cwdRealpath: '/workspace',
-      threadId: 'fork-thread',
-    };
-    const store = new SessionMetaStore(path);
-    store.markBridgeOwnedFork(
-      identity,
-      'desktop-source',
-      { preview: 'copied work', source: 'bridge-fork', updatedAt: 500 },
-      400,
-    );
-    await store.flush();
-
-    const reloaded = new SessionMetaStore(path);
-    await reloaded.load();
-    expect(reloaded.listBridgeOwnedCodexForks('/workspace')).toEqual([
-      expect.objectContaining({
-        threadId: 'fork-thread',
-        bridgeOwned: true,
-        forkedFromThreadId: 'desktop-source',
-        forkedAt: 400,
-        previewSnapshot: 'copied work',
-      }),
-    ]);
-    expect(reloaded.listBridgeOwnedCodexForks('/other')).toEqual([]);
-    reloaded.setArchived(identity, true);
-    expect(reloaded.listBridgeOwnedCodexForks('/workspace')).toEqual([]);
-    expect(reloaded.listBridgeOwnedCodexForks('/workspace', true)).toHaveLength(1);
-    await reloaded.flush();
-  });
-
   it('normalizes whitespace and limits titles by Unicode characters', () => {
     expect(normalizeSessionTitle('  alpha\n beta  ')).toBe('alpha beta');
     expect(Array.from(normalizeSessionTitle('会'.repeat(SESSION_TITLE_MAX_CHARS + 5)))).toHaveLength(

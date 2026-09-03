@@ -58,7 +58,6 @@ interface FakeLarkChannel {
   disconnect(): Promise<void>;
   getChatMode(chatId: string): Promise<'group' | 'topic'>;
   getConnectionStatus(): { state: 'connected'; reconnectAttempts: number };
-  getChatBots(chatId: string): Promise<Array<{ id: string; name?: string; isBot?: boolean }>>;
   send(chatId: string, content: unknown, options?: unknown): Promise<void>;
   stream(chatId: string, input: unknown, options?: unknown): Promise<void>;
 }
@@ -78,27 +77,6 @@ describe('bot identity injection into the agent adapter', () => {
     await startTestBridge(h);
 
     expect(h.agent.botIdentity).toEqual({ openId: 'ou_bot', name: 'Bridge' });
-  });
-
-  it('enables sender-name resolution and the bot loop guard', async () => {
-    const h = await createHarness();
-
-    await startTestBridge(h);
-
-    expect(sdkMock.createLarkChannel).toHaveBeenCalledWith(
-      expect.objectContaining({
-        resolveSenderNames: true,
-        policy: expect.objectContaining({
-          botLoopGuard: {
-            enabled: true,
-            windowMs: 60_000,
-            maxBotMentions: 5,
-            scope: 'chat',
-            onTrip: 'reject',
-          },
-        }),
-      }),
-    );
   });
 });
 
@@ -126,17 +104,12 @@ describe('sender identity in bridge_context', () => {
       senderType?: string;
       botOpenId?: string;
       mentions?: Array<{ openId?: string; name?: string; isBot?: boolean }>;
-      chatBots?: Array<{ openId: string; name?: string; isSelf?: boolean }>;
     };
     expect(context.senderType).toBe('bot');
     expect(context.botOpenId).toBe('ou_bot');
     expect(context.mentions).toEqual([
       { openId: 'ou_bot', name: 'Bridge', isBot: true },
       { openId: 'ou_human', name: '张三', isBot: false },
-    ]);
-    expect(context.chatBots).toEqual([
-      { openId: 'ou_bot', name: 'Bridge', isSelf: true },
-      { openId: 'ou_hermes', name: 'HermesBot' },
     ]);
   });
 
@@ -363,12 +336,6 @@ function createFakeLarkChannel(): FakeLarkChannel & { handlers: MessageHandlerMa
     },
     getConnectionStatus() {
       return { state: 'connected', reconnectAttempts: 0 };
-    },
-    async getChatBots() {
-      return [
-        { id: 'ou_bot', name: 'Bridge', isBot: true },
-        { id: 'ou_hermes', name: 'HermesBot', isBot: true },
-      ];
     },
     async send() {},
     async stream(_chatId, input) {

@@ -24,15 +24,7 @@ import {
 import { GROUP_MSG_SCOPE, hasGroupMsgScope } from '../bot/app-scope';
 import { requestScopeGrantLink } from '../bot/wizard';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
-import {
-  externalResumeCard,
-  externalThreadContentCard,
-  helpCard,
-  resumeCard,
-  resumeRenameCard,
-  statusCard,
-  workspacesCard,
-} from '../card/templates';
+import { helpCard, resumeCard, resumeRenameCard, statusCard, workspacesCard } from '../card/templates';
 import type { AppConfig, AppPreferences, MessageReplyMode, TenantBrand } from '../config/schema';
 import {
   getAgentStopGraceMs,
@@ -71,18 +63,8 @@ import {
 } from '../card/run-state';
 import { formatRelTime, listRecentSessions, type SessionSummary } from '../session/history';
 import {
-  archiveCodexThread,
-  CodexHistoryError,
-  FEISHU_RESUME_SOURCE_KINDS,
-  forkCodexThread,
-  listIndexedCodexThreadHistory,
   listCodexThreadHistory,
-  readCodexThread,
-  setCodexThreadName,
-  unarchiveCodexThread,
-  type CodexAppServerOptions,
   type CodexThreadHistoryEntry,
-  type CodexThreadDetails,
   type ListCodexThreadHistoryOptions,
 } from '../session/codex-history';
 import type { SessionCatalog, SessionCatalogIdentity } from '../session/catalog';
@@ -166,22 +148,6 @@ export interface CommandContext {
   codexHistoryProvider?: (
     options: ListCodexThreadHistoryOptions,
   ) => Promise<CodexThreadHistoryEntry[]>;
-  codexArchiveThread?: (options: CodexAppServerOptions, threadId: string) => Promise<void>;
-  codexUnarchiveThread?: (options: CodexAppServerOptions, threadId: string) => Promise<void>;
-  codexSetThreadName?: (
-    options: CodexAppServerOptions,
-    threadId: string,
-    name: string,
-  ) => Promise<void>;
-  codexReadThread?: (
-    options: CodexAppServerOptions,
-    threadId: string,
-  ) => Promise<CodexThreadDetails>;
-  codexForkThread?: (
-    options: CodexAppServerOptions,
-    threadId: string,
-    lastTurnId: string,
-  ) => Promise<CodexThreadDetails>;
   claudeHistoryProvider?: (cwd: string, limit: number) => Promise<SessionSummary[]>;
   /** Set when invoked from a CardKit 2.0 form submit. Keys are input `name`s. */
   formValue?: Record<string, unknown>;
@@ -209,20 +175,6 @@ type ResumeCandidateAction = 'use' | 'archive' | 'unarchive' | 'rename';
 
 const RESUME_CANDIDATE_TTL_MS = 10 * 60 * 1000;
 const resumeCandidates = new Map<string, ResumeCandidate>();
-interface ExternalThreadCandidate {
-  action: 'read' | 'fork';
-  scopeId: string;
-  cwdRealpath: string;
-  policyFingerprint: string;
-  threadId: string;
-  source: 'vscode' | 'appServer';
-  updatedAtMs: number;
-  preview: string;
-  forkNonce?: string;
-  expiresAt: number;
-}
-
-const externalThreadCandidates = new Map<string, ExternalThreadCandidate>();
 const AUDIT_SAFE_COMMAND_REPLY = '命令已处理。';
 const RESUME_APPLIED_REPLY = '已完成，请继续发送下一条消息。';
 
@@ -603,10 +555,6 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
   const sub = parts[0] ?? '';
   const rest = parts.slice(1).join(' ').trim();
 
-  if (sub === 'external') {
-    return handleExternalResume(parts.slice(1), ctx);
-  }
-
   if (sub === 'use' && rest) {
     return applyResume(rest, ctx);
   }
@@ -656,6 +604,7 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
     const history = identity ? await listCodexResumeHistory(ctx, cwd, historyFetchLimit(limit)) : [];
     if (history.length > 0 && identity) {
       const entries = history
+        .filter((thread) => !ctx.sessionMeta!.isArchived(metaIdentity(identity, { threadId: thread.threadId })))
         .slice(0, limit)
         .map((thread) => {
           const target = { threadId: thread.threadId } as const;
@@ -672,12 +621,17 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
             renameNonce: issueResumeCandidate(identity, target, 'rename'),
           };
         });
-      const card = resumeCard(cwd, entries, 'active', { showExternal: true });
+      const card = resumeCard(cwd, entries, 'active');
       await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
       return;
     }
     if (entry?.threadId && identity) {
       const target = { threadId: entry.threadId } as const;
+      if (ctx.sessionMeta.isArchived(metaIdentity(identity, target))) {
+        const card = resumeCard(cwd, [], 'active');
+        await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
+        return;
+      }
       const meta = ctx.sessionMeta.get(metaIdentity(identity, target));
       const preview = meta?.customTitle || entry.lastSummary || '当前 Codex 会话';
       const card = resumeCard(cwd, [{
@@ -693,11 +647,11 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
           updatedAt: entry.updatedAt,
         }),
         renameNonce: issueResumeCandidate(identity, target, 'rename'),
-      }], 'active', { showExternal: true });
+      }], 'active');
       await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
       return;
     }
-    const card = resumeCard(cwd, [], 'active', { showExternal: true });
+    const card = resumeCard(cwd, [], 'active');
     await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
     return;
   }
@@ -726,346 +680,43 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
   await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
 }
 
-async function handleExternalResume(parts: string[], ctx: CommandContext): Promise<void> {
-  if (ctx.controls.profileConfig.agentKind !== 'codex') {
-    await reply(ctx, '桌面 / VS Code 会话只能在 Codex profile 中使用。');
-    return;
-  }
-  if (ctx.chatMode !== 'p2p') {
-    await reply(ctx, '群聊中不展示桌面或 VS Code 会话详情，请在私聊中使用。');
-    return;
-  }
-  const identity = ctx.sessionCatalogIdentity;
-  const metaStore = ctx.sessionMeta;
-  const ops = resolveCodexAppServerOptions(ctx);
-  if (!identity || identity.agentId !== 'codex' || !ctx.sessionCatalog || !metaStore || !ops) {
-    await reply(ctx, '当前上下文无法读取 Codex 会话，请检查工作目录和 profile 配置。');
-    return;
-  }
-
-  const action = parts[0] ?? '';
-  if (action === 'read') {
-    const nonce = parts[1] ?? '';
-    const page = Number.parseInt(parts[2] ?? '1', 10);
-    return showExternalThread(nonce, Number.isFinite(page) ? page : 1, ctx, ops);
-  }
-  if (action === 'fork') {
-    return forkExternalThread(parts[1] ?? '', ctx, ops);
-  }
-
-  const requested = Number.parseInt(action, 10);
-  const limit = Number.isFinite(requested) && requested > 0 && requested <= 20 ? requested : 5;
-  const provider = ctx.codexHistoryProvider ?? listCodexThreadHistory;
-  try {
-    const listedHistory = await provider({
-      ...ops,
-      cwd: identity.cwdRealpath,
-      limit,
-      archived: false,
-      sourceKinds: ['vscode', 'appServer'],
-    });
-    const bridgeOwnedIds = new Set([
-      ...metaStore.listBridgeOwnedCodexForks(identity.cwdRealpath, false),
-      ...metaStore.listBridgeOwnedCodexForks(identity.cwdRealpath, true),
-    ].map((entry) => entry.threadId).filter((threadId): threadId is string => Boolean(threadId)));
-    let history = listedHistory
-      .filter((thread) =>
-        thread.cwd === identity.cwdRealpath &&
-        (thread.source === 'vscode' || thread.source === 'appServer') &&
-        !bridgeOwnedIds.has(thread.threadId),
-      );
-    if (!ctx.codexHistoryProvider && history.length < limit) {
-      try {
-        const excludedIds = new Set([
-          ...listedHistory.map((thread) => thread.threadId),
-          ...bridgeOwnedIds,
-        ]);
-        const recovered = await listIndexedCodexThreadHistory({
-          ...ops,
-          cwd: identity.cwdRealpath,
-          limit: limit - history.length,
-          archived: false,
-          sourceKinds: ['vscode', 'appServer'],
-        }, excludedIds);
-        history = [...history, ...recovered].sort((a, b) => b.updatedAtMs - a.updatedAtMs);
-      } catch (err) {
-        log.warn('session', 'codex-external-index-fallback-failed', {
-          message: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
-    const entries = history
-      .slice(0, limit)
-      .map((thread) => {
-        const forkNonce = issueExternalThreadCandidate(identity, thread, 'fork');
-        const readNonce = issueExternalThreadCandidate(identity, thread, 'read', forkNonce);
-        return {
-          preview: thread.name || thread.preview,
-          relTime: formatRelTime(thread.updatedAtMs),
-          source: thread.source === 'vscode' ? 'VS Code' : 'Codex Desktop',
-          readNonce,
-          forkNonce,
-        };
-      });
-    const card = externalResumeCard(identity.cwdRealpath, entries);
-    await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
-  } catch (err) {
-    log.warn('session', 'codex-external-list-failed', {
-      message: err instanceof Error ? err.message : String(err),
-    });
-    await reply(ctx, '读取桌面 / VS Code 会话失败，未更改当前会话。');
-  }
-}
-
-async function showExternalThread(
-  nonce: string,
-  requestedPage: number,
-  ctx: CommandContext,
-  ops: CodexAppServerOptions,
-): Promise<void> {
-  const identity = ctx.sessionCatalogIdentity!;
-  const candidate = inspectExternalThreadCandidate(nonce, identity, 'read');
-  if (!candidate?.forkNonce) {
-    await reply(ctx, '这个操作已失效，请重新打开 `/resume external` 列表。');
-    return;
-  }
-  try {
-    const thread = await (ctx.codexReadThread ?? readCodexThread)(ops, candidate.threadId);
-    if (!matchesExternalCandidate(thread, candidate, identity)) {
-      await reply(ctx, '源会话已发生变化，请重新打开 `/resume external` 列表。');
-      return;
-    }
-    const pages = externalThreadPages(thread);
-    const page = Math.min(Math.max(1, requestedPage), pages.length);
-    const card = externalThreadContentCard({
-      blocks: pages[page - 1]!,
-      page,
-      totalPages: pages.length,
-      readNonce: nonce,
-      forkNonce: candidate.forkNonce,
-    });
-    await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
-  } catch (err) {
-    log.warn('session', 'codex-external-read-failed', {
-      message: err instanceof Error ? err.message : String(err),
-    });
-    await reply(ctx, '读取会话内容失败，未更改原会话或当前会话。');
-  }
-}
-
-async function forkExternalThread(
-  nonce: string,
-  ctx: CommandContext,
-  ops: CodexAppServerOptions,
-): Promise<void> {
-  const identity = ctx.sessionCatalogIdentity!;
-  const candidate = inspectExternalThreadCandidate(nonce, identity, 'fork');
-  if (!candidate) {
-    await reply(ctx, '这个操作已失效，请重新打开 `/resume external` 列表。');
-    return;
-  }
-  if (ctx.activeRuns.get(ctx.scope)) {
-    await reply(ctx, '当前会话正在运行，请等它结束后再复制会话。');
-    return;
-  }
-  const read = ctx.codexReadThread ?? readCodexThread;
-  try {
-    const source = await read(ops, candidate.threadId);
-    if (!matchesExternalCandidate(source, candidate, identity)) {
-      await reply(ctx, '源会话已发生变化，请重新打开 `/resume external` 列表。');
-      return;
-    }
-    let completedIndex = -1;
-    for (let index = source.turns.length - 1; index >= 0; index -= 1) {
-      if (source.turns[index]?.status === 'completed') {
-        completedIndex = index;
-        break;
-      }
-    }
-    if (completedIndex < 0) {
-      await reply(ctx, '这个会话还没有已完成的 turn，无法复制。');
-      return;
-    }
-    const lastTurnId = source.turns[completedIndex]!.turnId;
-    const fork = await (ctx.codexForkThread ?? forkCodexThread)(
-      ops,
-      source.threadId,
-      lastTurnId,
-    );
-    if (!isValidFork(fork, source, completedIndex)) {
-      throw new Error('thread/fork response failed provenance verification');
-    }
-    const verified = await read(ops, fork.threadId);
-    if (!isValidFork(verified, source, completedIndex)) {
-      throw new Error('forked thread failed read-back verification');
-    }
-
-    ctx.sessionMeta!.markBridgeOwnedFork(
-      metaIdentity(identity, { threadId: verified.threadId }),
-      source.threadId,
-      { preview: candidate.preview, source: 'bridge-fork', updatedAt: verified.updatedAtMs },
-    );
-    ctx.sessionCatalog!.upsertActive({
-      ...identity,
-      threadId: verified.threadId,
-      lastSummary: candidate.preview,
-    });
-    externalThreadCandidates.delete(nonce);
-    await reply(ctx, '已复制并切换到新会话，请发送下一条消息继续。');
-  } catch (err) {
-    log.warn('session', 'codex-external-fork-failed', {
-      message: err instanceof Error ? err.message : String(err),
-    });
-    await reply(ctx, '复制会话失败，当前会话保持不变。');
-  }
-}
-
-function issueExternalThreadCandidate(
-  identity: SessionCatalogIdentity,
-  thread: CodexThreadHistoryEntry,
-  action: 'read' | 'fork',
-  forkNonce?: string,
-): string {
-  pruneExternalThreadCandidates();
-  let nonce = randomUUID().slice(0, 12);
-  while (externalThreadCandidates.has(nonce)) nonce = randomUUID().slice(0, 12);
-  externalThreadCandidates.set(nonce, {
-    action,
-    scopeId: identity.scopeId,
-    cwdRealpath: identity.cwdRealpath,
-    policyFingerprint: identity.policyFingerprint,
-    threadId: thread.threadId,
-    source: thread.source as 'vscode' | 'appServer',
-    updatedAtMs: thread.updatedAtMs,
-    preview: thread.name || thread.preview,
-    ...(forkNonce ? { forkNonce } : {}),
-    expiresAt: Date.now() + RESUME_CANDIDATE_TTL_MS,
-  });
-  return nonce;
-}
-
-function inspectExternalThreadCandidate(
-  nonce: string,
-  identity: SessionCatalogIdentity,
-  action: 'read' | 'fork',
-): ExternalThreadCandidate | undefined {
-  pruneExternalThreadCandidates();
-  const candidate = externalThreadCandidates.get(nonce);
-  if (
-    !candidate ||
-    candidate.action !== action ||
-    candidate.scopeId !== identity.scopeId ||
-    candidate.cwdRealpath !== identity.cwdRealpath ||
-    candidate.policyFingerprint !== identity.policyFingerprint
-  ) return undefined;
-  return { ...candidate };
-}
-
-function pruneExternalThreadCandidates(now = Date.now()): void {
-  for (const [nonce, candidate] of externalThreadCandidates.entries()) {
-    if (candidate.expiresAt <= now) externalThreadCandidates.delete(nonce);
-  }
-}
-
-function matchesExternalCandidate(
-  thread: CodexThreadDetails,
-  candidate: ExternalThreadCandidate,
-  identity: SessionCatalogIdentity,
-): boolean {
-  return thread.threadId === candidate.threadId &&
-    thread.cwd === identity.cwdRealpath &&
-    thread.source === candidate.source &&
-    thread.updatedAtMs === candidate.updatedAtMs;
-}
-
-function isValidFork(
-  fork: CodexThreadDetails,
-  source: CodexThreadDetails,
-  completedIndex: number,
-): boolean {
-  if (
-    fork.threadId === source.threadId ||
-    fork.forkedFromId !== source.threadId ||
-    fork.cwd !== source.cwd
-  ) return false;
-  const expectedIds = source.turns.slice(0, completedIndex + 1).map((turn) => turn.turnId);
-  return JSON.stringify(fork.turns.map((turn) => turn.turnId)) === JSON.stringify(expectedIds);
-}
-
-function externalThreadPages(thread: CodexThreadDetails): Array<Array<{
-  role: 'user' | 'assistant';
-  text: string;
-}>> {
-  const chunks = thread.turns.flatMap((turn) => turn.messages.flatMap((message) =>
-    splitText(message.text, 2500).map((text) => ({ role: message.role, text })),
-  ));
-  if (chunks.length === 0) return [[]];
-  const pages: typeof chunks[] = [];
-  let current: typeof chunks = [];
-  let chars = 0;
-  for (const chunk of chunks) {
-    if (current.length > 0 && (current.length >= 4 || chars + chunk.text.length > 7000)) {
-      pages.push(current);
-      current = [];
-      chars = 0;
-    }
-    current.push(chunk);
-    chars += chunk.text.length;
-  }
-  if (current.length > 0) pages.push(current);
-  return pages;
-}
-
-function splitText(input: string, maxChars: number): string[] {
-  const chars = Array.from(input);
-  const out: string[] = [];
-  for (let index = 0; index < chars.length; index += maxChars) {
-    out.push(chars.slice(index, index + maxChars).join(''));
-  }
-  return out.length > 0 ? out : [''];
-}
-
 async function listArchivedResumeHistory(ctx: CommandContext, cwd: string, limit: number): Promise<void> {
   const identity = ctx.sessionCatalogIdentity!;
   const metaStore = ctx.sessionMeta!;
-  const current = ctx.sessionCatalog?.activeFor(identity);
-
-  if (identity.agentId === 'codex') {
-    const history = await listCodexResumeHistory(ctx, cwd, historyFetchLimit(limit), true);
-    const entries = history.slice(0, limit).map((thread) => {
-      const target = { threadId: thread.threadId } as const;
-      const meta = metaStore.get(metaIdentity(identity, target));
-      return {
-        displayId: thread.threadId,
-        preview: meta?.customTitle || thread.name || thread.preview,
-        relTime: formatRelTime(thread.updatedAtMs),
-        detail: `Codex · ${thread.source}`,
-        current: current?.threadId === thread.threadId,
-        useNonce: issueResumeCandidate(identity, target, 'use'),
-        unarchiveNonce: issueResumeCandidate(identity, target, 'unarchive', codexSnapshot(thread)),
-        renameNonce: issueResumeCandidate(identity, target, 'rename'),
-        available: true,
-      };
-    });
-    const card = resumeCard(cwd, entries, 'archived');
-    await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
-    return;
-  }
-
   const archived = metaStore.listArchived(identity.agentId, identity.cwdRealpath).slice(0, limit);
-  const upstream = await listClaudeResumeHistory(ctx, cwd, historyFetchLimit(Math.max(limit, archived.length)));
-  const upstreamById = new Map(upstream.map((entry) => [entry.sessionId, entry]));
+  const current = ctx.sessionCatalog?.activeFor(identity);
+  const upstream = identity.agentId === 'codex'
+    ? await listCodexResumeHistory(ctx, cwd, historyFetchLimit(Math.max(limit, archived.length)))
+    : await listClaudeResumeHistory(ctx, cwd, historyFetchLimit(Math.max(limit, archived.length)));
+  const upstreamById = new Map(upstream.map((entry) => [
+    identity.agentId === 'codex'
+      ? (entry as CodexThreadHistoryEntry).threadId
+      : (entry as SessionSummary).sessionId,
+    entry,
+  ]));
   const entries = archived.map((meta) => {
-    const id = meta.sessionId!;
+    const id = identity.agentId === 'codex' ? meta.threadId! : meta.sessionId!;
     const found = upstreamById.get(id);
-    const target = { sessionId: id } as const;
-    const preview = meta.customTitle || found?.preview || meta.previewSnapshot || '(无标题会话)';
+    const target = identity.agentId === 'codex'
+      ? { threadId: id } as const
+      : { sessionId: id } as const;
+    const preview = meta.customTitle ||
+      (identity.agentId === 'codex' ? (found as CodexThreadHistoryEntry | undefined)?.name : undefined) ||
+      found?.preview || meta.previewSnapshot || '(无标题会话)';
+    const updatedAt = identity.agentId === 'codex'
+      ? (found as CodexThreadHistoryEntry | undefined)?.updatedAtMs
+      : (found as SessionSummary | undefined)?.mtime;
+    const detail = found
+      ? identity.agentId === 'codex'
+        ? `Codex · ${(found as CodexThreadHistoryEntry).source}`
+        : `${(found as SessionSummary).lineCount} 条`
+      : '本机会话已不存在或暂不可见';
     return {
       displayId: id,
       preview,
-      relTime: formatRelTime(found?.mtime ?? meta.updatedAtSnapshot ?? meta.archivedAt ?? meta.updatedAt),
-      detail: found ? `${found.lineCount} 条` : '本机会话已不存在或暂不可见',
-      current: current?.sessionId === id,
+      relTime: formatRelTime(updatedAt ?? meta.updatedAtSnapshot ?? meta.archivedAt ?? meta.updatedAt),
+      detail,
+      current: identity.agentId === 'codex' ? current?.threadId === id : current?.sessionId === id,
       ...(found ? { useNonce: issueResumeCandidate(identity, target, 'use') } : {}),
       unarchiveNonce: issueResumeCandidate(identity, target, 'unarchive'),
       renameNonce: issueResumeCandidate(identity, target, 'rename'),
@@ -1089,43 +740,7 @@ async function setResumeArchived(nonce: string, archived: boolean, ctx: CommandC
   }
   const target = candidateTarget(candidate);
   const identity = metaIdentity(ctx.sessionCatalogIdentity, target);
-
-  if (candidate.agentId === 'codex') {
-    const threadId = candidate.threadId;
-    if (!threadId) {
-      await reply(ctx, '缺少 thread id，无法归档该 Codex 会话。');
-      return;
-    }
-    const ops = resolveCodexAppServerOptions(ctx);
-    if (!ops) {
-      await reply(ctx, '当前 profile 未配置 Codex binary，无法同步归档状态。');
-      return;
-    }
-    try {
-      if (archived) {
-        const archive = ctx.codexArchiveThread ?? archiveCodexThread;
-        await archive(ops, threadId);
-      } else {
-        const unarchive = ctx.codexUnarchiveThread ?? unarchiveCodexThread;
-        await unarchive(ops, threadId);
-      }
-    } catch (err) {
-      const message = err instanceof CodexHistoryError
-        ? err.message
-        : err instanceof Error ? err.message : String(err);
-      await reply(
-        ctx,
-        archived
-          ? `归档失败：${message}\n若该对话正在其它 Codex 客户端中打开，请先关闭后再试。`
-          : `取消归档失败：${message}`,
-      );
-      return;
-    }
-    // Keep Feishu-side meta as a display cache only; native Codex state is source of truth.
-    ctx.sessionMeta.setArchived(identity, archived, candidate.snapshot);
-  } else {
-    ctx.sessionMeta.setArchived(identity, archived, candidate.snapshot);
-  }
+  ctx.sessionMeta.setArchived(identity, archived, candidate.snapshot);
 
   let clearedCurrent = false;
   if (archived && ctx.sessionCatalog) {
@@ -1141,17 +756,11 @@ async function setResumeArchived(nonce: string, archived: boolean, ctx: CommandC
     }
   }
   if (archived) {
-    await reply(ctx, candidate.agentId === 'codex'
-      ? (clearedCurrent
-        ? '已归档当前会话（已写入 Codex 本地状态；桌面/插件默认列表不显示飞书会话）。下一条普通消息会开始新会话，也可从归档列表恢复。'
-        : '已归档（已写入 Codex 本地状态；桌面/插件默认列表不显示飞书会话）。')
-      : (clearedCurrent
-        ? '已归档当前会话，仅从列表隐藏，未删除本机数据。下一条普通消息会开始新会话，也可从归档列表恢复。'
-        : '已归档，仅从默认列表隐藏，未删除本机会话数据。'));
+    await reply(ctx, clearedCurrent
+      ? '已归档当前会话，仅从列表隐藏，未删除本机数据。下一条普通消息会开始新会话，也可从归档列表恢复。'
+      : '已归档，仅从默认列表隐藏，未删除本机会话数据。');
   } else {
-    await reply(ctx, candidate.agentId === 'codex'
-      ? '已取消归档（已写入 Codex 本地状态）。'
-      : '已取消归档，会话已回到默认历史列表。');
+    await reply(ctx, '已取消归档，会话已回到默认历史列表。');
   }
 }
 
@@ -1191,34 +800,8 @@ async function renameResumeCandidate(nonce: string, rawTitle: string, ctx: Comma
     await reply(ctx, '会话名称不能为空。');
     return;
   }
-
-  if (candidate.agentId === 'codex') {
-    const threadId = candidate.threadId;
-    if (!threadId) {
-      await reply(ctx, '缺少 thread id，无法重命名该 Codex 会话。');
-      return;
-    }
-    const ops = resolveCodexAppServerOptions(ctx);
-    if (!ops) {
-      await reply(ctx, '当前 profile 未配置 Codex binary，无法同步会话名称。');
-      return;
-    }
-    try {
-      const setName = ctx.codexSetThreadName ?? setCodexThreadName;
-      await setName(ops, threadId, title);
-    } catch (err) {
-      const message = err instanceof CodexHistoryError
-        ? err.message
-        : err instanceof Error ? err.message : String(err);
-      await reply(ctx, `重命名失败：${message}`);
-      return;
-    }
-  }
-
   ctx.sessionMeta.setTitle(metaIdentity(ctx.sessionCatalogIdentity, candidateTarget(candidate)), title);
-  await reply(ctx, candidate.agentId === 'codex'
-    ? `会话已命名为「${title}」（已写入 Codex 本地状态）。`
-    : `会话已命名为「${title}」。`);
+  await reply(ctx, `会话已命名为「${title}」。`);
 }
 
 function historyFetchLimit(limit: number): number {
@@ -1383,79 +966,29 @@ async function listCodexResumeHistory(
   ctx: CommandContext,
   cwd: string,
   limit: number,
-  archived = false,
 ): Promise<CodexThreadHistoryEntry[]> {
-  const ops = resolveCodexAppServerOptions(ctx);
-  if (!ops) return [];
+  const codex = ctx.controls.profileConfig.codex;
+  const binary = codex?.binaryPath;
+  if (!binary) return [];
 
   const provider = ctx.codexHistoryProvider ?? listCodexThreadHistory;
   try {
-    const listed = await provider({
-      ...ops,
+    return await provider({
+      binary,
       cwd,
       limit,
-      archived,
-      sourceKinds: FEISHU_RESUME_SOURCE_KINDS,
+      profileStateDir: commandProfilePaths(ctx).profileDir,
+      ...(codex.codexHome ? { codexHome: codex.codexHome } : {}),
+      ...(codex.inheritCodexHome !== undefined
+        ? { inheritCodexHome: codex.inheritCodexHome }
+        : {}),
     });
-    const ownedMeta = ctx.sessionMeta?.listBridgeOwnedCodexForks(
-      ctx.sessionCatalogIdentity?.cwdRealpath ?? cwd,
-      archived,
-    ) ?? [];
-    if (ownedMeta.length === 0) return listed;
-    const read = ctx.codexReadThread ?? readCodexThread;
-    const owned = await Promise.all(ownedMeta.slice(0, limit).map(async (meta) => {
-      try {
-        const thread = await read(ops, meta.threadId!);
-        if (thread.cwd !== meta.cwdRealpath) return undefined;
-        return {
-          threadId: thread.threadId,
-          preview: meta.previewSnapshot || '(复制的会话)',
-          cwd: thread.cwd,
-          createdAtMs: meta.forkedAt ?? thread.updatedAtMs,
-          updatedAtMs: thread.updatedAtMs,
-          source: 'bridge-fork',
-        } satisfies CodexThreadHistoryEntry;
-      } catch (err) {
-        if (!archived) return undefined;
-        return {
-          threadId: meta.threadId!,
-          preview: meta.previewSnapshot || '(复制的会话)',
-          cwd: meta.cwdRealpath,
-          createdAtMs: meta.forkedAt ?? meta.updatedAt,
-          updatedAtMs: meta.updatedAtSnapshot ?? meta.updatedAt,
-          source: 'bridge-fork',
-        } satisfies CodexThreadHistoryEntry;
-      }
-    }));
-    const byId = new Map(listed.map((entry) => [entry.threadId, entry]));
-    for (const entry of owned) {
-      if (entry) byId.set(entry.threadId, entry);
-    }
-    return [...byId.values()]
-      .sort((a, b) => b.updatedAtMs - a.updatedAtMs)
-      .slice(0, limit);
   } catch (err) {
     log.warn('session', 'codex-history-failed', {
       message: err instanceof Error ? err.message : String(err),
-      archived,
-      sourceKinds: FEISHU_RESUME_SOURCE_KINDS,
     });
     return [];
   }
-}
-
-function resolveCodexAppServerOptions(ctx: CommandContext): CodexAppServerOptions | undefined {
-  const codex = ctx.controls.profileConfig.codex;
-  const binary = codex?.binaryPath;
-  if (!binary) return undefined;
-  return {
-    binary,
-    profileStateDir: commandProfilePaths(ctx).profileDir,
-    ...(codex.codexHome ? { codexHome: codex.codexHome } : {}),
-    ...(codex.inheritCodexHome !== undefined
-      ? { inheritCodexHome: codex.inheritCodexHome }
-      : {}),
-  };
 }
 
 function effectiveWorkspaceCwd(ctx: CommandContext): string | undefined {

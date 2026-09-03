@@ -28,9 +28,6 @@ export interface SessionMetaEntry extends SessionMetaIdentity {
   sourceSnapshot?: string;
   updatedAtSnapshot?: number;
   lineCountSnapshot?: number;
-  bridgeOwned?: boolean;
-  forkedFromThreadId?: string;
-  forkedAt?: number;
   updatedAt: number;
 }
 
@@ -82,46 +79,6 @@ export class SessionMetaStore {
       .filter((entry) => entry.agentId === agentId && entry.cwdRealpath === cwdRealpath && entry.archived)
       .sort((a, b) => (b.archivedAt ?? b.updatedAt) - (a.archivedAt ?? a.updatedAt))
       .map((entry) => ({ ...entry }));
-  }
-
-  listBridgeOwnedCodexForks(cwdRealpath: string, archived = false): SessionMetaEntry[] {
-    return [...this.data.values()]
-      .filter((entry) =>
-        entry.agentId === 'codex' &&
-        entry.cwdRealpath === cwdRealpath &&
-        entry.bridgeOwned === true &&
-        entry.archived === archived,
-      )
-      .sort((a, b) => (b.updatedAtSnapshot ?? b.updatedAt) - (a.updatedAtSnapshot ?? a.updatedAt))
-      .map((entry) => ({ ...entry }));
-  }
-
-  markBridgeOwnedFork(
-    identity: SessionMetaIdentity,
-    sourceThreadId: string,
-    snapshot: SessionMetaSnapshot = {},
-    now = Date.now(),
-  ): SessionMetaEntry {
-    if (identity.agentId !== 'codex' || !identity.threadId) {
-      throw new Error('bridge-owned fork metadata requires a Codex thread');
-    }
-    const key = sessionMetaKey(identity);
-    const previous = this.data.get(key);
-    const entry: SessionMetaEntry = {
-      ...(previous ?? { ...identity, key, archived: false, updatedAt: now }),
-      archived: false,
-      bridgeOwned: true,
-      forkedFromThreadId: sourceThreadId,
-      forkedAt: now,
-      updatedAt: now,
-      ...(snapshot.preview ? { previewSnapshot: snapshot.preview } : {}),
-      ...(snapshot.source ? { sourceSnapshot: snapshot.source } : {}),
-      ...(snapshot.updatedAt !== undefined ? { updatedAtSnapshot: snapshot.updatedAt } : {}),
-    };
-    delete entry.archivedAt;
-    this.data.set(key, entry);
-    this.schedulePersist();
-    return { ...entry };
   }
 
   setArchived(
@@ -221,11 +178,6 @@ function normalizeEntry(input: unknown): SessionMetaEntry | undefined {
     ...(typeof raw.sourceSnapshot === 'string' ? { sourceSnapshot: raw.sourceSnapshot } : {}),
     ...(typeof raw.updatedAtSnapshot === 'number' ? { updatedAtSnapshot: raw.updatedAtSnapshot } : {}),
     ...(typeof raw.lineCountSnapshot === 'number' ? { lineCountSnapshot: raw.lineCountSnapshot } : {}),
-    ...(raw.bridgeOwned === true ? { bridgeOwned: true } : {}),
-    ...(typeof raw.forkedFromThreadId === 'string'
-      ? { forkedFromThreadId: raw.forkedFromThreadId }
-      : {}),
-    ...(typeof raw.forkedAt === 'number' ? { forkedAt: raw.forkedAt } : {}),
   };
 }
 

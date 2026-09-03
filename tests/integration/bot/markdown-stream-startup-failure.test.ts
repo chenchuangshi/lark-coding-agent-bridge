@@ -195,13 +195,12 @@ describe('markdown stream startup failures', () => {
     await startTestBridge(h);
 
     await h.channel.handlers.message?.(message('om_final', 'run'));
-    await waitFor(() => h.channel.sent.length === 2);
+    await waitFor(() => h.channel.sent.length === 1);
 
     expect(visibleProgress.some((markdown) => markdown.includes('progress update'))).toBe(true);
-    expect(h.channel.sent).toHaveLength(2);
+    expect(h.channel.sent).toHaveLength(1);
     expect(lastMarkdown(h.channel)).toContain('FINAL_SENTINEL');
     expect(h.channel.sent[0]?.options).toMatchObject({ replyTo: 'om_final' });
-    expectQuickControls(h.channel);
   });
 
   it('opens no progress stream for a final-only round', async () => {
@@ -222,14 +221,13 @@ describe('markdown stream startup failures', () => {
     await startTestBridge(h);
 
     await h.channel.handlers.message?.(message('om_final_only', 'run'));
-    await waitFor(() => h.channel.sent.length === 2);
+    await waitFor(() => h.channel.sent.length === 1);
     // give a stray stream / recall a chance to fire before asserting
     await new Promise((resolve) => setTimeout(resolve, 80));
 
     expect(streamCalls).toHaveLength(0);
-    expect(h.channel.sent).toHaveLength(2);
+    expect(h.channel.sent).toHaveLength(1);
     expect(lastMarkdown(h.channel)).toContain('FINAL_ONLY_SENTINEL');
-    expectQuickControls(h.channel);
   });
 
   it('does not repeat streamed text as the final reply when Codex held nothing back', async () => {
@@ -347,10 +345,9 @@ describe('markdown stream startup failures', () => {
     await startTestBridge(h);
 
     await h.channel.handlers.message?.(message('om_stream_fail', 'run'));
-    await waitFor(() => h.channel.sent.length === 2);
+    await waitFor(() => h.channel.sent.length === 1);
 
     expect(lastMarkdown(h.channel)).toContain('FINAL_AFTER_STREAM_FAILURE');
-    expectQuickControls(h.channel);
     expect(
       fail.mock.calls.some(
         (call) =>
@@ -640,20 +637,9 @@ function message(messageId: string, content: string): NormalizedMessage {
 }
 
 function lastMarkdown(channel: FakeLarkChannel): string {
-  const content = [...channel.sent]
-    .reverse()
-    .map((entry) => entry.content as { markdown?: string } | undefined)
-    .find((entry) => typeof entry?.markdown === 'string');
+  const content = channel.sent.at(-1)?.content as { markdown?: string } | undefined;
   expect(content?.markdown).toBeTypeOf('string');
   return content?.markdown ?? '';
-}
-
-function expectQuickControls(channel: FakeLarkChannel): void {
-  const content = channel.sent.at(-1)?.content as { card?: unknown } | undefined;
-  const card = JSON.stringify(content?.card);
-  expect(card).toContain('📊 状态');
-  expect(card).not.toContain('🔁 切换会话');
-  expect(card).not.toContain('🆕 新会话');
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 3000): Promise<void> {

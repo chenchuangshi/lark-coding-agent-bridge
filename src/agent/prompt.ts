@@ -6,12 +6,6 @@ export interface BridgePromptMention {
   isBot?: boolean;
 }
 
-export interface BridgePromptBot {
-  openId: string;
-  name?: string;
-  isSelf?: boolean;
-}
-
 export interface BridgePromptContext {
   chatId: string;
   chatType: string;
@@ -23,8 +17,6 @@ export interface BridgePromptContext {
   botOpenId?: string;
   /** Accounts @-mentioned in the triggering message(s), deduped across the batch. */
   mentions?: BridgePromptMention[];
-  /** Bots currently present in this chat, resolved from the Feishu bot roster. */
-  chatBots?: BridgePromptBot[];
   threadId?: string;
   messageIds?: string[];
   source: BridgePromptSource;

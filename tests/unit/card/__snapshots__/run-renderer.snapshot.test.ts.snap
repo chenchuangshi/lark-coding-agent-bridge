@@ -139,85 +139,12 @@ exports[`run card renderer snapshots > collapses consecutive tools while preserv
         "tag": "collapsible_panel",
         "vertical_spacing": "8px",
       },
-      {
-        "columns": [
-          {
-            "elements": [
-              {
-                "behaviors": [
-                  {
-                    "type": "callback",
-                    "value": {
-                      "cmd": "status",
-                    },
-                  },
-                ],
-                "tag": "button",
-                "text": {
-                  "content": "📊 状态",
-                  "tag": "plain_text",
-                },
-                "type": "primary",
-              },
-            ],
-            "tag": "column",
-            "width": "auto",
-          },
-        ],
-        "flex_mode": "flow",
-        "horizontal_spacing": "small",
-        "tag": "column_set",
-      },
     ],
   },
   "config": {
     "streaming_mode": false,
     "summary": {
       "content": "已完成",
-    },
-  },
-  "schema": "2.0",
-}
-`;
-
-exports[`run card renderer snapshots > renders a standalone shortcut card for non-card reply modes 1`] = `
-{
-  "body": {
-    "elements": [
-      {
-        "columns": [
-          {
-            "elements": [
-              {
-                "behaviors": [
-                  {
-                    "type": "callback",
-                    "value": {
-                      "cmd": "status",
-                    },
-                  },
-                ],
-                "tag": "button",
-                "text": {
-                  "content": "📊 状态",
-                  "tag": "plain_text",
-                },
-                "type": "primary",
-              },
-            ],
-            "tag": "column",
-            "width": "auto",
-          },
-        ],
-        "flex_mode": "flow",
-        "horizontal_spacing": "small",
-        "tag": "column_set",
-      },
-    ],
-  },
-  "config": {
-    "summary": {
-      "content": "快捷操作",
     },
   },
   "schema": "2.0",
@@ -331,35 +258,6 @@ exports[`run card renderer snapshots > renders active and completed thinking 2`]
         "content": "final answer",
         "tag": "markdown",
       },
-      {
-        "columns": [
-          {
-            "elements": [
-              {
-                "behaviors": [
-                  {
-                    "type": "callback",
-                    "value": {
-                      "cmd": "status",
-                    },
-                  },
-                ],
-                "tag": "button",
-                "text": {
-                  "content": "📊 状态",
-                  "tag": "plain_text",
-                },
-                "type": "primary",
-              },
-            ],
-            "tag": "column",
-            "width": "auto",
-          },
-        ],
-        "flex_mode": "flow",
-        "horizontal_spacing": "small",
-        "tag": "column_set",
-      },
     ],
   },
   "config": {
@@ -381,35 +279,6 @@ exports[`run card renderer snapshots > renders done, error, interrupted, and idl
         "tag": "markdown",
         "text_size": "notation",
       },
-      {
-        "columns": [
-          {
-            "elements": [
-              {
-                "behaviors": [
-                  {
-                    "type": "callback",
-                    "value": {
-                      "cmd": "status",
-                    },
-                  },
-                ],
-                "tag": "button",
-                "text": {
-                  "content": "📊 状态",
-                  "tag": "plain_text",
-                },
-                "type": "primary",
-              },
-            ],
-            "tag": "column",
-            "width": "auto",
-          },
-        ],
-        "flex_mode": "flow",
-        "horizontal_spacing": "small",
-        "tag": "column_set",
-      },
     ],
   },
   "config": {
@@ -430,35 +299,6 @@ exports[`run card renderer snapshots > renders done, error, interrupted, and idl
         "content": "⚠️ agent 失败：process failed",
         "tag": "markdown",
         "text_size": "notation",
-      },
-      {
-        "columns": [
-          {
-            "elements": [
-              {
-                "behaviors": [
-                  {
-                    "type": "callback",
-                    "value": {
-                      "cmd": "status",
-                    },
-                  },
-                ],
-                "tag": "button",
-                "text": {
-                  "content": "📊 状态",
-                  "tag": "plain_text",
-                },
-                "type": "primary",
-              },
-            ],
-            "tag": "column",
-            "width": "auto",
-          },
-        ],
-        "flex_mode": "flow",
-        "horizontal_spacing": "small",
-        "tag": "column_set",
       },
     ],
   },
@@ -485,35 +325,6 @@ exports[`run card renderer snapshots > renders done, error, interrupted, and idl
         "tag": "markdown",
         "text_size": "notation",
       },
-      {
-        "columns": [
-          {
-            "elements": [
-              {
-                "behaviors": [
-                  {
-                    "type": "callback",
-                    "value": {
-                      "cmd": "status",
-                    },
-                  },
-                ],
-                "tag": "button",
-                "text": {
-                  "content": "📊 状态",
-                  "tag": "plain_text",
-                },
-                "type": "primary",
-              },
-            ],
-            "tag": "column",
-            "width": "auto",
-          },
-        ],
-        "flex_mode": "flow",
-        "horizontal_spacing": "small",
-        "tag": "column_set",
-      },
     ],
   },
   "config": {
@@ -538,35 +349,6 @@ exports[`run card renderer snapshots > renders done, error, interrupted, and idl
         "content": "_⏱ 15 分钟无响应,已自动终止_",
         "tag": "markdown",
         "text_size": "notation",
-      },
-      {
-        "columns": [
-          {
-            "elements": [
-              {
-                "behaviors": [
-                  {
-                    "type": "callback",
-                    "value": {
-                      "cmd": "status",
-                    },
-                  },
-                ],
-                "tag": "button",
-                "text": {
-                  "content": "📊 状态",
-                  "tag": "plain_text",
-                },
-                "type": "primary",
-              },
-            ],
-            "tag": "column",
-            "width": "auto",
-          },
-        ],
-        "flex_mode": "flow",
-        "horizontal_spacing": "small",
-        "tag": "column_set",
       },
     ],
   },
@@ -765,35 +547,6 @@ pwd
         "tag": "collapsible_panel",
         "vertical_spacing": "8px",
       },
-      {
-        "columns": [
-          {
-            "elements": [
-              {
-                "behaviors": [
-                  {
-                    "type": "callback",
-                    "value": {
-                      "cmd": "status",
-                    },
-                  },
-                ],
-                "tag": "button",
-                "text": {
-                  "content": "📊 状态",
-                  "tag": "plain_text",
-                },
-                "type": "primary",
-              },
-            ],
-            "tag": "column",
-            "width": "auto",
-          },
-        ],
-        "flex_mode": "flow",
-        "horizontal_spacing": "small",
-        "tag": "column_set",
-      },
     ],
   },
   "config": {
@@ -845,35 +598,6 @@ ENOENT
         "padding": "8px 8px 8px 8px",
         "tag": "collapsible_panel",
         "vertical_spacing": "8px",
-      },
-      {
-        "columns": [
-          {
-            "elements": [
-              {
-                "behaviors": [
-                  {
-                    "type": "callback",
-                    "value": {
-                      "cmd": "status",
-                    },
-                  },
-                ],
-                "tag": "button",
-                "text": {
-                  "content": "📊 状态",
-                  "tag": "plain_text",
-                },
-                "type": "primary",
-              },
-            ],
-            "tag": "column",
-            "width": "auto",
-          },
-        ],
-        "flex_mode": "flow",
-        "horizontal_spacing": "small",
-        "tag": "column_set",
       },
     ],
   },

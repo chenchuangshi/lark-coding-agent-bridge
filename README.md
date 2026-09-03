@@ -143,7 +143,7 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/ws save <name>` | Save the current working directory as a named workspace |
 | `/ws use <name>` | Switch to a named workspace |
 | `/ws remove <name>` | Delete a named workspace |
-| `/resume [N]` | View history and switch, archive, or rename sessions |
+| `/resume [N]` | View history and resume, archive, or rename sessions |
 | `/resume archived [N]` | View archived sessions; archiving hides entries without deleting local data |
 | `/status` | Show profile, agent, working directory, session, lark-cli identity, and run state |
 | `/config` | Adjust presentation preferences, access settings, and lark-cli identity policy |
@@ -161,10 +161,6 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/help` | Help card |
 
 DMs do not require an @ mention. Groups and topic groups require `@bot` by default; `@all` is ignored. Cloud-doc comments in supported document types run when the bot is mentioned.
-
-### Task-card shortcuts
-
-Running task cards show **Stop**. Once a task reaches a terminal state, a **Status** button appears in the result-card footer or, for Markdown/plain-text replies, in a compact control card sent immediately after the result. The status card still provides **Switch session** and **New session** actions. These buttons invoke bridge commands directly and do not require configuring or publishing a Feishu/Lark custom bot menu.
 
 ## Reply Display and COT
 

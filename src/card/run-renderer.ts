@@ -50,8 +50,6 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
   if (state.terminal === 'running') {
     if (state.footer) elements.push(footerStatus(state.footer));
     elements.push(stopButton(options));
-  } else {
-    elements.push(quickControls());
   }
 
   // Mask raw emails across every text field so the Feishu tenant audit doesn't
@@ -64,15 +62,6 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
     },
     body: { elements },
   });
-}
-
-/** Compact command card used after non-card replies. */
-export function renderQuickControlsCard(): object {
-  return {
-    schema: '2.0',
-    config: { summary: { content: '快捷操作' } },
-    body: { elements: [quickControls()] },
-  };
 }
 
 function* groupBlocks(blocks: Block[]): Generator<Group> {
@@ -202,32 +191,6 @@ function stopButton(options: RunCardRenderOptions): object {
     text: { tag: 'plain_text', content: '⏹ 终止' },
     type: 'danger',
     behaviors: [{ type: 'callback', value }],
-  };
-}
-
-function quickControls(): object {
-  return {
-    tag: 'column_set',
-    flex_mode: 'flow',
-    horizontal_spacing: 'small',
-    columns: [
-      quickControlColumn('📊 状态', 'status', 'primary'),
-    ],
-  };
-}
-
-function quickControlColumn(text: string, cmd: string, type?: 'primary'): object {
-  return {
-    tag: 'column',
-    width: 'auto',
-    elements: [
-      {
-        tag: 'button',
-        text: { tag: 'plain_text', content: text },
-        ...(type ? { type } : {}),
-        behaviors: [{ type: 'callback', value: { cmd } }],
-      },
-    ],
   };
 }
 

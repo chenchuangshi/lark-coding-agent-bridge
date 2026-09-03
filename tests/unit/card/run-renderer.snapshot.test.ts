@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { renderCard, renderQuickControlsCard } from '../../../src/card/run-renderer.js';
+import { renderCard } from '../../../src/card/run-renderer.js';
 import {
   initialState,
   markIdleTimeout,
@@ -98,26 +98,6 @@ describe('run card renderer snapshots', () => {
       __bridge_cb: true,
       bridge_token: 'token-for-stop',
     });
-  });
-
-  it('renders unsigned built-in shortcuts after a run finishes', () => {
-    const card = renderCard(stateFrom([{ type: 'done', terminationReason: 'normal' }])) as {
-      body?: {
-        elements?: Array<{
-          tag?: string;
-          columns?: Array<{ elements?: Array<{ behaviors?: Array<{ value?: Record<string, unknown> }> }> }>;
-        }>;
-      };
-    };
-    const controls = card.body?.elements?.find((element) => element.tag === 'column_set');
-
-    expect(controls?.columns?.map((column) => column.elements?.[0]?.behaviors?.[0]?.value)).toEqual([
-      { cmd: 'status' },
-    ]);
-  });
-
-  it('renders a standalone shortcut card for non-card reply modes', () => {
-    expect(normalizeCard(renderQuickControlsCard())).toMatchSnapshot();
   });
 
   it('keeps local paths in user-visible cards and text fallbacks', () => {
