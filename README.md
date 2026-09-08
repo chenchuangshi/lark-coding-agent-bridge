@@ -143,7 +143,9 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/ws save <name>` | Save the current working directory as a named workspace |
 | `/ws use <name>` | Switch to a named workspace |
 | `/ws remove <name>` | Delete a named workspace |
-| `/resume` | Resume compatible history for the same agent, working directory, and permission mode |
+| `/resume [N]` | List Feishu `exec` history; switch, archive, or rename (writes Codex-native state) |
+| `/resume external [N]` | View desktop / VS Code sessions and fork one into Feishu |
+| `/resume archived [N]` | View archived Feishu sessions |
 | `/status` | Show profile, agent, working directory, session, lark-cli identity, and run state |
 | `/config` | Adjust presentation preferences, access settings, and lark-cli identity policy |
 | `/invite user @name` | Allow a user to use the bot in DMs |

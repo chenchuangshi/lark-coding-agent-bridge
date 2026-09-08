@@ -18,7 +18,7 @@ import type { AgentAdapter, AgentEvent } from '../agent/types';
 import { handleCardAction } from '../card/dispatcher';
 import { CallbackAuth } from '../card/callback-auth';
 import { CallbackNonceStore } from '../card/callback-store';
-import { renderCard } from '../card/run-renderer';
+import { renderCard, renderQuickControlsCard } from '../card/run-renderer';
 import {
   finalizeIfRunning,
   initialState,
@@ -53,6 +53,7 @@ import type { ScopeContext } from '../policy/run-policy';
 import { createOwnerRefreshController } from '../policy/owner';
 import { RunExecutor } from '../runtime/run-executor';
 import type { SessionCatalog } from '../session/catalog';
+import type { SessionMetaStore } from '../session/session-meta';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 import { ActiveRuns, type RunHandle } from './active-runs';
@@ -176,13 +177,14 @@ export interface StartChannelDeps {
   agent: AgentAdapter;
   sessions: SessionStore;
   sessionCatalog?: SessionCatalog;
+  sessionMeta?: SessionMetaStore;
   workspaces: WorkspaceStore;
   controls: Controls;
   appPaths?: Pick<AppPaths, 'secretsFile' | 'keystoreSaltFile' | 'mediaDir'>;
 }
 
 export async function startChannel(deps: StartChannelDeps): Promise<BridgeChannel> {
-  const { cfg, agent, sessions, sessionCatalog, workspaces, controls } = deps;
+  const { cfg, agent, sessions, sessionCatalog, sessionMeta, workspaces, controls } = deps;
   const activeRuns = new ActiveRuns();
   // ChatModeCache stays per-bridge-instance — invalidated on restart along
   // with everything else. Topic-mode chats only need one chat.get() call ever.
@@ -340,6 +342,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           agent,
           sessions,
           sessionCatalog,
+          sessionMeta,
           workspaces,
           activeRuns,
           pending,
@@ -362,6 +365,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           evt,
           sessions,
           sessionCatalog,
+          sessionMeta,
           workspaces,
           activeRuns,
           agent,
@@ -524,6 +528,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         activeRuns.stopAll(),
         sessions.flush(),
         sessionCatalog?.flush(),
+        sessionMeta?.flush(),
         callbackNonceStore?.flush(),
         workspaces.flush(),
       ]);
@@ -616,6 +621,7 @@ interface IntakeDeps {
   agent: AgentAdapter;
   sessions: SessionStore;
   sessionCatalog?: SessionCatalog;
+  sessionMeta?: SessionMetaStore;
   workspaces: WorkspaceStore;
   activeRuns: ActiveRuns;
   pending: PendingQueue;
@@ -639,6 +645,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     agent,
     sessions,
     sessionCatalog,
+    sessionMeta,
     workspaces,
     activeRuns,
     pending,
@@ -765,6 +772,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     agent,
     activeRuns,
     sessionCatalog,
+    sessionMeta,
     sessionCatalogIdentity: await commandSessionCatalogIdentity({
       msg: emsg,
       scope,
@@ -1477,6 +1485,7 @@ async function sendFinalReply(input: {
       );
       requireMessageReceipt(result, 'markdown');
       log.info('outbound', 'sent', outboundLogFields(input, 'markdown', body, result));
+      await sendQuickControls(input);
     }
   } else if (body.trim()) {
     const result = await input.channel.send(
@@ -1486,6 +1495,34 @@ async function sendFinalReply(input: {
     );
     requireMessageReceipt(result, 'text');
     log.info('outbound', 'sent', outboundLogFields(input, 'text', body, result));
+    await sendQuickControls(input);
+  }
+}
+
+async function sendQuickControls(input: {
+  channel: LarkChannel;
+  chatId: string;
+  scope: string;
+  sendOpts: { replyTo: string; replyInThread?: boolean };
+}): Promise<void> {
+  try {
+    const result = await input.channel.send(
+      input.chatId,
+      { card: renderQuickControlsCard() },
+      input.sendOpts,
+    );
+    requireMessageReceipt(result, 'quick-controls');
+    log.info('outbound', 'sent-controls', {
+      scope: input.scope,
+      messageId: result.messageId,
+      replyTo: input.sendOpts.replyTo,
+      replyInThread: input.sendOpts.replyInThread === true,
+    });
+  } catch (err) {
+    log.warn('outbound', 'controls-failed', {
+      scope: input.scope,
+      err: err instanceof Error ? err.message : String(err),
+    });
   }
 }
 

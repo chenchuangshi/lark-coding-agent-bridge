@@ -9,6 +9,7 @@ import { log } from '../core/logger';
 import { refreshOwnerControls } from '../policy/owner';
 import { SessionStore } from '../session/store';
 import { SessionCatalog } from '../session/catalog';
+import { SessionMetaStore } from '../session/session-meta';
 import { WorkspaceStore } from '../workspace/store';
 import { preFlightChecks } from '../cli/preflight';
 import {
@@ -76,6 +77,7 @@ class ManagedProfile {
     private agent: AgentAdapter,
     private sessions: SessionStore,
     private sessionCatalog: SessionCatalog,
+    private sessionMeta: SessionMetaStore,
     private workspaces: WorkspaceStore,
     private startChannelFn: StartChannelFn,
     private onExitCommand: (profile: string) => void,
@@ -116,6 +118,7 @@ class ManagedProfile {
         agent: this.agent,
         sessions: this.sessions,
         sessionCatalog: this.sessionCatalog,
+        sessionMeta: this.sessionMeta,
         workspaces: this.workspaces,
         controls: this.controls,
         appPaths: this.appPaths,
@@ -230,6 +233,7 @@ class ManagedProfile {
         agent: nextAgent,
         sessions: this.sessions,
         sessionCatalog: this.sessionCatalog,
+        sessionMeta: this.sessionMeta,
         workspaces: this.workspaces,
         controls: nextControls,
         appPaths: nextRuntime.appPaths,
@@ -341,6 +345,8 @@ export class Supervisor {
     await sessions.load();
     const sessionCatalog = new SessionCatalog(`${appPaths.sessionsFile}.catalog.json`);
     await sessionCatalog.load();
+    const sessionMeta = new SessionMetaStore(appPaths.sessionMetaFile);
+    await sessionMeta.load();
     const workspaces = new WorkspaceStore(appPaths.workspacesFile);
     await workspaces.load();
 
@@ -353,6 +359,7 @@ export class Supervisor {
       agent,
       sessions,
       sessionCatalog,
+      sessionMeta,
       workspaces,
       this.startChannelFn,
       (p) => void this.stopProfile(p).catch(() => undefined),

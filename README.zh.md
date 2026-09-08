@@ -143,7 +143,9 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | `/ws save <name>` | 把当前工作目录保存为命名工作空间 |
 | `/ws use <name>` | 切换到命名工作空间 |
 | `/ws remove <name>` | 删除命名工作空间 |
-| `/resume` | 恢复同 agent、工作目录、权限模式兼容的历史会话 |
+| `/resume [N]` | 飞书侧 `exec` 历史；可切换、归档或重命名（写入 Codex 本地状态） |
+| `/resume external [N]` | 查看桌面 / VS Code 会话，复制后在飞书继续 |
+| `/resume archived [N]` | 查看已归档的飞书会话 |
 | `/status` | 查看 profile、agent、工作目录、会话、lark-cli 身份和运行状态 |
 | `/config` | 调整展示偏好、访问控制和 lark-cli 身份策略 |
 | `/invite user @某人` | 允许用户私聊使用 bot |

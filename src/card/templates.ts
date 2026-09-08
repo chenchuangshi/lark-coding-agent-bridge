@@ -124,8 +124,7 @@ export function statusCard(info: StatusInfo): object {
     divMd(lines.join('\n')),
     HR,
     actions([
-      { text: '🆕 新会话', value: { cmd: 'new' }, style: 'primary' },
-      { text: '🔁 恢复会话', value: { cmd: 'resume' } },
+      { text: '🔁 切换会话', value: { cmd: 'resume' }, style: 'primary' },
       { text: '📂 工作目录', value: { cmd: 'ws.list' } },
       { text: '💡 帮助', value: { cmd: 'help' } },
     ]),
@@ -133,48 +132,204 @@ export function statusCard(info: StatusInfo): object {
 }
 
 export interface ResumeEntry {
-  sessionId: string;
-  displayId?: string;
+  displayId: string;
   preview: string;
   relTime: string;
   lineCount?: number;
   detail?: string;
   current?: boolean;
+  available?: boolean;
+  useNonce?: string;
+  archiveNonce?: string;
+  unarchiveNonce?: string;
+  renameNonce?: string;
 }
 
-export function resumeCard(cwd: string, entries: ResumeEntry[]): object {
+export function resumeCard(
+  cwd: string,
+  entries: ResumeEntry[],
+  mode: 'active' | 'archived' = 'active',
+  options: { showExternal?: boolean } = {},
+): object {
   const elements: object[] = [];
   elements.push(divMd(`当前 cwd：\`${escapeCode(cwd)}\``));
+  if (mode === 'archived') {
+    elements.push(divMd('归档仅从默认列表隐藏，**不会删除本机会话数据**。'));
+  }
 
   if (entries.length === 0) {
     elements.push(HR);
-    elements.push(divMd('此 cwd 下没有历史会话。'));
-    return shell('🔁 恢复历史会话', elements);
+    elements.push(divMd(mode === 'archived' ? '此 cwd 下没有归档会话。' : '此 cwd 下没有历史会话。'));
+    elements.push(actions([
+      mode === 'archived'
+        ? { text: '← 返回历史列表', value: { cmd: 'resume' }, style: 'primary' }
+        : { text: '🆕 新会话', value: { cmd: 'new' }, style: 'primary' },
+      ...(mode === 'active'
+        ? [
+            { text: '📦 查看归档', value: { cmd: 'resume.archived' } },
+            ...(options.showExternal
+              ? [{ text: '桌面 / VS Code 会话', value: { cmd: 'resume.external' } }]
+              : []),
+          ]
+        : []),
+    ]));
+    return shell(mode === 'archived' ? '📦 归档的会话' : '🔁 切换历史会话', elements);
   }
 
   elements.push(HR);
   entries.forEach((e, i) => {
     const marker = e.current ? '  ← 当前' : '';
     const detail = e.detail ?? `${e.lineCount ?? 0} 条`;
-    const displayId = e.displayId ?? e.sessionId;
+    const displayId = e.displayId;
     elements.push(
       divMd(
         `**${i + 1}.** ${escapeMd(e.preview)}${marker}\n\`${displayId.slice(0, 8)}…\` · ${e.relTime} · ${escapeMd(detail)}`,
       ),
     );
-    elements.push(
-      actions([
-        {
-          text: e.current ? '已是当前会话' : '▸ 恢复此会话',
-          value: { cmd: 'resume.use', arg: e.sessionId },
-          style: e.current ? 'default' : 'primary',
-        },
-      ]),
-    );
+    const buttons: Array<{ text: string; value: Record<string, unknown>; style?: 'primary' | 'default' | 'danger' }> = [];
+    if (e.useNonce) {
+      buttons.push({
+        text: e.current ? '已是当前会话' : '▸ 切换到此会话',
+        value: { cmd: 'resume.use', arg: e.useNonce },
+        style: e.current ? 'default' : 'primary',
+      });
+    }
+    if (mode === 'active' && e.archiveNonce) {
+      buttons.push({ text: '归档', value: { cmd: 'resume.archive', arg: e.archiveNonce } });
+    }
+    if (mode === 'archived' && e.unarchiveNonce) {
+      buttons.push({ text: '取消归档', value: { cmd: 'resume.unarchive', arg: e.unarchiveNonce } });
+    }
+    if (e.renameNonce) {
+      buttons.push({ text: '重命名', value: { cmd: 'resume.rename', arg: e.renameNonce } });
+    }
+    if (buttons.length > 0) elements.push(actions(buttons));
     if (i < entries.length - 1) elements.push(HR);
   });
 
-  return shell('🔁 恢复历史会话', elements);
+  elements.push(HR);
+  elements.push(actions([
+    ...(mode === 'active'
+      ? [{ text: '🆕 新会话', value: { cmd: 'new' }, style: 'primary' as const }]
+      : []),
+    mode === 'archived'
+      ? { text: '← 返回历史列表', value: { cmd: 'resume' }, style: 'primary' }
+      : { text: '📦 查看归档', value: { cmd: 'resume.archived' } },
+    ...(mode === 'active' && options.showExternal
+      ? [{ text: '桌面 / VS Code 会话', value: { cmd: 'resume.external' } }]
+      : []),
+  ]));
+  return shell(mode === 'archived' ? '📦 归档的会话' : '🔁 切换历史会话', elements);
+}
+
+export interface ExternalResumeEntry {
+  preview: string;
+  relTime: string;
+  source: string;
+  readNonce: string;
+  forkNonce: string;
+}
+
+export function externalResumeCard(cwd: string, entries: ExternalResumeEntry[]): object {
+  const elements: object[] = [
+    divMd(`当前 cwd：\`${escapeCode(cwd)}\``),
+    divMd('这里只显示 Codex Desktop 和 VS Code 的当前工作目录会话。'),
+    HR,
+  ];
+  if (entries.length === 0) {
+    elements.push(divMd('当前 cwd 下没有桌面或 VS Code 会话；其他工作目录的会话不会在这里显示。'));
+  } else {
+    entries.forEach((entry, index) => {
+      elements.push(divMd(
+        `**${index + 1}.** ${escapeMd(entry.preview)}\n${entry.relTime} · ${escapeMd(entry.source)}`,
+      ));
+      elements.push(actions([
+        { text: '查看内容', value: { cmd: 'resume.external.read', arg: `${entry.readNonce} 1` } },
+        { text: '复制后继续', value: { cmd: 'resume.external.fork', arg: entry.forkNonce }, style: 'primary' },
+      ]));
+      if (index < entries.length - 1) elements.push(HR);
+    });
+  }
+  elements.push(HR);
+  elements.push(actions([{ text: '← 返回飞书会话', value: { cmd: 'resume' }, style: 'primary' }]));
+  return shell('桌面 / VS Code 会话', elements);
+}
+
+export interface ExternalThreadContentBlock {
+  role: 'user' | 'assistant';
+  text: string;
+}
+
+export function externalThreadContentCard(input: {
+  blocks: ExternalThreadContentBlock[];
+  page: number;
+  totalPages: number;
+  readNonce: string;
+  forkNonce: string;
+}): object {
+  const elements: object[] = [divMd(`第 ${input.page} / ${input.totalPages} 页`), HR];
+  if (input.blocks.length === 0) {
+    elements.push(divMd('这个会话没有可展示的用户或助手消息。'));
+    elements.push(HR);
+  }
+  for (const block of input.blocks) {
+    elements.push(divMd(`**${block.role === 'user' ? '用户' : '助手'}**\n${escapeMd(block.text)}`));
+    elements.push(HR);
+  }
+  const navigation: ButtonSpec[] = [];
+  if (input.page > 1) {
+    navigation.push({
+      text: '← 上一页',
+      value: { cmd: 'resume.external.read', arg: `${input.readNonce} ${input.page - 1}` },
+    });
+  }
+  if (input.page < input.totalPages) {
+    navigation.push({
+      text: '下一页 →',
+      value: { cmd: 'resume.external.read', arg: `${input.readNonce} ${input.page + 1}` },
+    });
+  }
+  if (navigation.length > 0) elements.push(actions(navigation));
+  elements.push(actions([
+    { text: '复制后继续', value: { cmd: 'resume.external.fork', arg: input.forkNonce }, style: 'primary' },
+    { text: '← 返回列表', value: { cmd: 'resume.external' } },
+  ]));
+  return shell('会话内容', elements);
+}
+
+export function resumeRenameCard(nonce: string, currentTitle = ''): object {
+  return {
+    schema: '2.0',
+    config: { summary: { content: '重命名会话' } },
+    body: {
+      elements: [
+        {
+          tag: 'form',
+          name: 'resume_rename_form',
+          elements: [
+            { tag: 'markdown', content: '✏️ **重命名会话**\n\n输入一个新名称（最多 80 个字符）。' },
+            {
+              tag: 'input',
+              name: 'session_title',
+              ...(currentTitle ? { default_value: currentTitle } : {}),
+              placeholder: { tag: 'plain_text', content: '例如：修复会话历史' },
+              input_type: 'text',
+              required: true,
+              max_length: 80,
+            },
+            {
+              tag: 'button',
+              name: 'submit_btn',
+              text: { tag: 'plain_text', content: '保存名称' },
+              type: 'primary',
+              form_action_type: 'submit',
+              behaviors: [{ type: 'callback', value: { cmd: 'resume.rename', arg: nonce } }],
+            },
+          ],
+        },
+      ],
+    },
+  };
 }
 
 export function helpCard(agentName = 'Agent'): object {
@@ -186,7 +341,9 @@ export function helpCard(agentName = 'Agent'): object {
         '',
         '- `/new` `/reset` — 清空当前 chat 的会话',
         '- `/new chat [name]` — 新建群+新会话，自动拉你进群',
-        '- `/resume [N]` — 列出并恢复历史会话（最多 N 条）',
+        '- `/resume [N]` — 飞书侧历史（仅 exec），可切换、归档和重命名',
+        '- `/resume external [N]` — 查看桌面 / VS Code 会话，复制后在飞书继续',
+        '- `/resume archived [N]` — 查看归档的飞书会话（与桌面/插件列表互不可见）',
         '- `/cd <path>` — 切换工作目录（会重置 session）',
         '- `/ws list|save <name>|use <name>|remove <name>` — 工作目录',
         '- `/account` — 查看当前应用；`/account change` 换 appId/secret 并重连',
@@ -208,7 +365,7 @@ export function helpCard(agentName = 'Agent'): object {
     HR,
     actions([
       { text: '📊 状态', value: { cmd: 'status' }, style: 'primary' },
-      { text: '🔁 恢复会话', value: { cmd: 'resume' } },
+      { text: '🔁 切换会话', value: { cmd: 'resume' } },
       { text: '📂 工作目录', value: { cmd: 'ws.list' } },
       { text: '🆕 新会话', value: { cmd: 'new' } },
     ]),
